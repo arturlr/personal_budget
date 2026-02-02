@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Budget - Cash Flow</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
+        .nav { background: #fff; padding: 15px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; gap: 20px; }
+        .nav a { text-decoration: none; color: #333; padding: 8px 16px; border-radius: 4px; }
+        .nav a:hover { background: #f0f0f0; }
+        .nav a.active { background: #007bff; color: white; }
+        .nav a:first-child { font-weight: 600; }
+        .container { max-width: 1400px; margin: 20px auto; padding: 20px; }
+        .filters { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; }
+        .filters select, .filters input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+        .account-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .account-card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .account-card h4 { font-size: 14px; color: #6c757d; margin-bottom: 8px; }
+        .account-card .balance { font-size: 24px; font-weight: 600; }
+        .account-card .balance.positive { color: #28a745; }
+        .account-card .balance.negative { color: #dc3545; }
+        .section { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .section h2 { margin-bottom: 15px; font-size: 18px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; font-weight: 600; }
+        .amount { text-align: right; }
+        .income { color: #28a745; }
+        .expense { color: #dc3545; }
+        .clickable { cursor: pointer; }
+        .clickable:hover { background: #f0f0f0; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .modal-content { background: white; margin: 50px auto; padding: 20px; border-radius: 8px; max-width: 900px; max-height: 80vh; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .close-btn { background: none; border: none; font-size: 24px; cursor: pointer; }
+        .total-card { background: linear-gradient(135deg, #007bff, #0056b3); color: white; }
+        .total-card h4 { color: rgba(255,255,255,0.8); }
+        .total-card .balance { color: white; }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <a href="/">Personal Budget</a>
+        <a href="/">Transactions</a>
+        <a href="/config">Configuration</a>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/cashflow" class="active">Cash Flow</a>
+    </div>
+    <div class="container">
+        <h1 style="margin-bottom: 20px;">Cash Flow Reports</h1>
+        
+        <div class="filters">
+            <label>Year:</label>
+            <select id="year-select" onchange="loadData()"></select>
+        </div>
+
+        <!-- Account Balances -->
+        <div id="account-balances" class="account-cards"></div>
+
+        <!-- Summary Stats -->
+        <div class="section">
+            <h2>Cash Flow Summary</h2>
+            <div id="summary-stats" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px;"></div>
+        </div>
+
+        <!-- Monthly Category Breakdown -->
+        <div class="section">
+            <h2>Monthly Category Breakdown</h2>
+            <div id="category-table"></div>
+        </div>
+
+        <!-- Credit Card Payments -->
+        <div class="section">
+            <h2>Credit Card Payments</h2>
+            <div id="cc-payments"></div>
+        </div>
+    </div>
+
+    <!-- Transaction Drill-down Modal -->
+    <div id="txn-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Transactions</h3>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+    <script>
+        let currentYear = new Date().getFullYear();
+        let categories = [];
+
+        async function init() {
+            populateYearSelect();
+            categories = await fetch('/api/categories').then(r => r.json());
+            await loadData();
+        }
+
+        function populateYearSelect() {
+            const select = document.getElementById('year-select');
+            for (let year = new Date().getFullYear() + 1; year >= 2020; year--) {
+                const opt = document.createElement('option');
+                opt.value = year;
+                opt.textContent = year;
+                if (year === currentYear) opt.selected = true;
+                select.appendChild(opt);
+            }
+        }
+
+        async function loadData() {
+            currentYear = parseInt(document.getElementById('year-select').value);
+            const from = `${currentYear}-01-01`;
+            const to = `${currentYear}-12-31`;
+            
+            await Promise.all([
+                loadAccountBalances(),
+                loadSummary(from, to),
+                loadCategoryBreakdown(from, to),
+                loadCCPayments(from, to)
+            ]);
+        }
+
+        async function loadAccountBalances() {
+            const res = await fetch('/api/reports/cashflow/account-balances');
+            const data = await res.json();
+            
+            let html = '';
+            data.accounts.forEach(acc => {
+                const cls = acc.balance >= 0 ? 'positive' : 'negative';
+                html += `<div class="account-card">
+                    <h4>${acc.account}</h4>
+                    <div class="balance ${cls}">$${acc.balance.toFixed(2)}</div>
+                </div>`;
+            });
+            html += `<div class="account-card total-card">
+                <h4>Total Net Worth</h4>
+                <div class="balance">$${data.total_balance.toFixed(2)}</div>
+            </div>`;
+            document.getElementById('account-balances').innerHTML = html;
+        }
+
+        async function loadSummary(from, to) {
+            const res = await fetch(`/api/reports/cashflow/summary?from=${from}&to=${to}`);
+            const data = await res.json();
+            
+            document.getElementById('summary-stats').innerHTML = `
+                <div class="account-card"><h4>Total Income</h4><div class="balance positive">$${data.total_income.toFixed(2)}</div></div>
+                <div class="account-card"><h4>Total Expenses</h4><div class="balance negative">$${data.total_expenses.toFixed(2)}</div></div>
+                <div class="account-card"><h4>Net Cash Flow</h4><div class="balance ${data.net_cash_flow >= 0 ? 'positive' : 'negative'}">$${data.net_cash_flow.toFixed(2)}</div></div>
+                <div class="account-card"><h4>Avg Monthly</h4><div class="balance">$${data.avg_monthly_net.toFixed(2)}</div></div>
+            `;
+        }
+
+        async function loadCategoryBreakdown(from, to) {
+            const res = await fetch(`/api/reports/cashflow/by-category?from=${from}&to=${to}`);
+            const data = await res.json();
+            
+            const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const catData = {};
+            
+            data.forEach(row => {
+                const cat = row.category || 'Uncategorized';
+                if (!catData[cat]) catData[cat] = { spending: {}, income: {}, type: row.category_type, id: row.category_id };
+                const mon = parseInt(row.month.split('-')[1]) - 1;
+                catData[cat].spending[mon] = (catData[cat].spending[mon] || 0) + row.spending;
+                catData[cat].income[mon] = (catData[cat].income[mon] || 0) + row.income;
+            });
+
+            let html = '<table><thead><tr><th>Category</th>';
+            months.forEach(m => html += `<th class="amount">${m}</th>`);
+            html += '<th class="amount">Total</th></tr></thead><tbody>';
+            
+            Object.entries(catData).sort((a,b) => {
+                const totalA = Object.values(a[1].spending).reduce((s,v) => s+v, 0);
+                const totalB = Object.values(b[1].spending).reduce((s,v) => s+v, 0);
+                return totalB - totalA;
+            }).forEach(([cat, d]) => {
+                let total = 0;
+                html += `<tr class="clickable" onclick="drillDown('${d.id}', '${cat}')"><td>${cat}</td>`;
+                for (let i = 0; i < 12; i++) {
+                    const val = d.type === 'income' ? (d.income[i] || 0) : (d.spending[i] || 0);
+                    total += val;
+                    const cls = d.type === 'income' ? 'income' : 'expense';
+                    html += `<td class="amount ${cls}" onclick="event.stopPropagation(); drillDownMonth('${d.id}', '${cat}', ${currentYear}, ${i+1})">${val > 0 ? '$' + val.toFixed(2) : '-'}</td>`;
+                }
+                const cls = d.type === 'income' ? 'income' : 'expense';
+                html += `<td class="amount ${cls}"><strong>$${total.toFixed(2)}</strong></td></tr>`;
+            });
+            html += '</tbody></table>';
+            document.getElementById('category-table').innerHTML = html;
+        }
+
+        async function loadCCPayments(from, to) {
+            const res = await fetch(`/api/reports/cashflow/credit-card-payments?from=${from}&to=${to}`);
+            const data = await res.json();
+            
+            if (data.length === 0) {
+                document.getElementById('cc-payments').innerHTML = '<p>No credit card payments recorded.</p>';
+                return;
+            }
+            
+            let html = '<table><thead><tr><th>Month</th><th>Account</th><th class="amount">Amount</th><th class="amount">Payments</th></tr></thead><tbody>';
+            data.forEach(row => {
+                html += `<tr><td>${row.month}</td><td>${row.account}</td><td class="amount">$${row.amount.toFixed(2)}</td><td class="amount">${row.payment_count}</td></tr>`;
+            });
+            html += '</tbody></table>';
+            document.getElementById('cc-payments').innerHTML = html;
+        }
+
+        async function drillDown(categoryId, categoryName) {
+            const from = `${currentYear}-01-01`;
+            const to = `${currentYear}-12-31`;
+            const res = await fetch(`/api/reports/cashflow/transactions?from=${from}&to=${to}&category_id=${categoryId}`);
+            const txns = await res.json();
+            showTransactionModal(categoryName + ' - ' + currentYear, txns);
+        }
+
+        async function drillDownMonth(categoryId, categoryName, year, month) {
+            const monthStr = month.toString().padStart(2, '0');
+            const res = await fetch(`/api/reports/cashflow/transactions?month=${year}-${monthStr}&category_id=${categoryId}`);
+            const txns = await res.json();
+            const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            showTransactionModal(categoryName + ' - ' + months[month-1] + ' ' + year, txns);
+        }
+
+        function showTransactionModal(title, txns) {
+            document.getElementById('modal-title').textContent = title;
+            let html = '<table><thead><tr><th>Date</th><th>Memo</th><th class="amount">Amount</th></tr></thead><tbody>';
+            txns.forEach(t => {
+                const cls = t.amount >= 0 ? 'income' : 'expense';
+                html += `<tr><td>${t.date}</td><td>${t.memo || '-'}</td><td class="amount ${cls}">$${Math.abs(t.amount).toFixed(2)}</td></tr>`;
+            });
+            html += '</tbody></table>';
+            document.getElementById('modal-body').innerHTML = html;
+            document.getElementById('txn-modal').style.display = 'block';
+        }
+
+        function closeModal() {
+            document.getElementById('txn-modal').style.display = 'none';
+        }
+
+        window.onclick = function(e) {
+            if (e.target.classList.contains('modal')) closeModal();
+        };
+
+        init();
+    </script>
+</body>
+</html>
