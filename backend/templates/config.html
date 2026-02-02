@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Budget - Configuration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
+        .nav { background: #fff; padding: 15px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; gap: 20px; }
+        .nav a { text-decoration: none; color: #333; padding: 8px 16px; border-radius: 4px; }
+        .nav a:hover { background: #f0f0f0; }
+        .nav a.active { background: #007bff; color: white; }
+        .container { max-width: 1200px; margin: 20px auto; padding: 20px; }
+        .section { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; display: none; }
+        .section.active { display: block; }
+        h2 { margin-bottom: 20px; color: #333; }
+        .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-primary:hover { background: #0056b3; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f8f9fa; font-weight: 600; }
+        tr:hover { background: #f8f9fa; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: 500; }
+        .form-group input, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+        .form-inline { display: flex; gap: 10px; align-items: end; margin-bottom: 20px; }
+        .form-inline .form-group { flex: 1; margin-bottom: 0; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+        .badge-income { background: #d4edda; color: #155724; }
+        .badge-expense { background: #f8d7da; color: #721c24; }
+        .badge-transfer { background: #d1ecf1; color: #0c5460; }
+        .tree-item { padding: 8px; margin: 4px 0; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        .tree-item.parent { background: #f8f9fa; font-weight: 600; }
+        .tree-item.child { margin-left: 30px; background: #fff; border-left: 3px solid #007bff; }
+        .tree-actions { display: flex; gap: 5px; }
+        .color-preview { width: 30px; height: 30px; border-radius: 4px; border: 1px solid #ddd; }
+        .color-picker-btn { width: 100%; height: 40px; border-radius: 4px; border: 2px solid #ddd; cursor: pointer; }
+        .color-picker-btn:hover { border-color: #007bff; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .modal.active { display: flex; align-items: center; justify-content: center; }
+        .modal-content { background: white; padding: 30px; border-radius: 8px; max-width: 500px; width: 90%; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .modal-header h3 { margin: 0; }
+        .close { cursor: pointer; font-size: 24px; color: #999; }
+        .close:hover { color: #333; }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <a href="/" style="font-weight: 600;">Personal Budget</a>
+        <a href="/">Transactions</a>
+        <a href="/config" class="active">Configuration</a>
+        <a href="/dashboard">Dashboard</a>
+    </div>
+
+    <div class="container">
+        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+            <button class="btn btn-primary" onclick="showSection('categories')">Categories</button>
+            <button class="btn btn-primary" onclick="showSection('rules')">Category Rules</button>
+            <button class="btn btn-primary" onclick="showSection('accounts')">Accounts</button>
+            <button class="btn btn-primary" onclick="showSection('forecast')">Forecast</button>
+        </div>
+
+        <!-- Categories Section -->
+        <div id="categories" class="section active">
+            <h2>Categories</h2>
+            <button class="btn btn-success" onclick="openCategoryModal()">+ Add Category</button>
+            <div id="categories-tree" style="margin-top: 20px;"></div>
+        </div>
+
+        <!-- Rules Section -->
+        <div id="rules" class="section">
+            <h2>Category Rules</h2>
+            <div class="form-inline">
+                <div class="form-group">
+                    <label>Pattern</label>
+                    <input type="text" id="rule-pattern" placeholder="e.g., AMAZON">
+                </div>
+                <div class="form-group">
+                    <label>Category</label>
+                    <select id="rule-category"></select>
+                </div>
+                <div class="form-group">
+                    <label>Priority</label>
+                    <input type="number" id="rule-priority" value="5">
+                </div>
+                <div class="form-group">
+                    <label>&nbsp;</label>
+                    <button class="btn btn-success" onclick="addRule()">Add Rule</button>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Pattern</th>
+                        <th>Category</th>
+                        <th>Priority</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="rules-body"></tbody>
+            </table>
+        </div>
+
+        <!-- Accounts Section -->
+        <div id="accounts" class="section">
+            <h2>Accounts</h2>
+            <div class="form-inline">
+                <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" id="account-name" placeholder="e.g., Main Checking">
+                </div>
+                <div class="form-group">
+                    <label>Number</label>
+                    <input type="text" id="account-number" placeholder="Optional">
+                </div>
+                <div class="form-group">
+                    <label>Starting Balance</label>
+                    <input type="number" id="account-balance" step="0.01" value="0">
+                </div>
+                <div class="form-group">
+                    <label>&nbsp;</label>
+                    <button class="btn btn-success" onclick="addAccount()">Add Account</button>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Number</th>
+                        <th>Starting Balance</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="accounts-body"></tbody>
+            </table>
+        </div>
+
+        <!-- Forecast Section -->
+        <div id="forecast" class="section">
+            <h2>Forecast Items</h2>
+            <button class="btn btn-success" onclick="openForecastModal()">+ Add Forecast Item</button>
+            <table style="margin-top: 20px;">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Category</th>
+                        <th>Amount</th>
+                        <th>Frequency</th>
+                        <th>Type</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="forecast-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Category Modal -->
+    <div id="category-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="category-modal-title">Add Category</h3>
+                <span class="close" onclick="closeCategoryModal()">&times;</span>
+            </div>
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" id="cat-name">
+            </div>
+            <div class="form-group">
+                <label>Type</label>
+                <select id="cat-type">
+                    <option value="expense">Expense</option>
+                    <option value="income">Income</option>
+                    <option value="transfer">Transfer</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Color</label>
+                <input type="color" id="cat-color" value="#007bff" class="color-picker-btn">
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" id="cat-is-sub"> This is a subcategory</label>
+            </div>
+            <div class="form-group" id="cat-parent-group" style="display: none;">
+                <label>Parent Category</label>
+                <select id="cat-parent"></select>
+            </div>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button class="btn btn-success" onclick="saveCategory()">Save</button>
+                <button class="btn btn-secondary" onclick="closeCategoryModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Forecast Modal -->
+    <div id="forecast-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add Forecast Item</h3>
+                <span class="close" onclick="closeForecastModal()">&times;</span>
+            </div>
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" id="fc-name">
+            </div>
+            <div class="form-group">
+                <label>Category</label>
+                <select id="fc-category"></select>
+            </div>
+            <div class="form-group">
+                <label>Amount</label>
+                <input type="number" id="fc-amount" step="0.01">
+            </div>
+            <div class="form-group">
+                <label>Frequency</label>
+                <select id="fc-frequency">
+                    <option value="monthly">Monthly</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="annual">Annual</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Type</label>
+                <select id="fc-type">
+                    <option value="fixed">Fixed</option>
+                    <option value="variable">Variable</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Start Date</label>
+                <input type="date" id="fc-start">
+            </div>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button class="btn btn-success" onclick="saveForecast()">Save</button>
+                <button class="btn btn-secondary" onclick="closeForecastModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let categories = [];
+        let rules = [];
+        let accounts = [];
+        let forecast = [];
+        let editingCategoryId = null;
+
+        async function init() {
+            await loadCategories();
+            await loadRules();
+            await loadAccounts();
+            await loadForecast();
+        }
+
+        function showSection(section) {
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            document.getElementById(section).classList.add('active');
+        }
+
+        // Categories
+        async function loadCategories() {
+            const res = await fetch('/api/categories');
+            categories = await res.json();
+            renderCategoriesTree();
+            populateCategorySelects();
+        }
+
+        function renderCategoriesTree() {
+            const tree = document.getElementById('categories-tree');
+            tree.innerHTML = '';
+            
+            categories.forEach(cat => {
+                const div = document.createElement('div');
+                div.className = 'tree-item parent';
+                div.innerHTML = `
+                    <div>
+                        <span class="badge badge-${cat.type}">${cat.type}</span>
+                        <strong>${cat.name}</strong>
+                        ${cat.color ? `<span class="color-preview" style="background: ${cat.color}; display: inline-block; margin-left: 10px;"></span>` : ''}
+                    </div>
+                    <div class="tree-actions">
+                        <button class="btn btn-success" style="font-size: 12px; padding: 4px 8px;" onclick="addSubcategory(${cat.id})">+ Subcategory</button>
+                        <button class="btn btn-primary" style="font-size: 12px; padding: 4px 8px;" onclick="editCategory(${cat.id})">Edit</button>
+                        <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteCategory(${cat.id})">Delete</button>
+                    </div>
+                `;
+                tree.appendChild(div);
+                
+                (cat.subcategories || []).forEach(sub => {
+                    const subDiv = document.createElement('div');
+                    subDiv.className = 'tree-item child';
+                    subDiv.innerHTML = `
+                        <div>${sub.name}</div>
+                        <div class="tree-actions">
+                            <button class="btn btn-primary" style="font-size: 12px; padding: 4px 8px;" onclick="editCategory(${sub.id})">Edit</button>
+                            <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteCategory(${sub.id})">Delete</button>
+                        </div>
+                    `;
+                    tree.appendChild(subDiv);
+                });
+            });
+        }
+
+        function openCategoryModal(id = null) {
+            editingCategoryId = id;
+            document.getElementById('category-modal-title').textContent = id ? 'Edit Category' : 'Add Category';
+            
+            if (id) {
+                const cat = findCategoryById(id);
+                document.getElementById('cat-name').value = cat.name;
+                document.getElementById('cat-type').value = cat.type;
+                document.getElementById('cat-color').value = cat.color || '#007bff';
+                document.getElementById('cat-is-sub').checked = !!cat.parent_id;
+                if (cat.parent_id) {
+                    document.getElementById('cat-parent-group').style.display = 'block';
+                    document.getElementById('cat-parent').value = cat.parent_id;
+                }
+            } else {
+                document.getElementById('cat-name').value = '';
+                document.getElementById('cat-type').value = 'expense';
+                document.getElementById('cat-color').value = '#007bff';
+                document.getElementById('cat-is-sub').checked = false;
+                document.getElementById('cat-parent-group').style.display = 'none';
+            }
+            
+            document.getElementById('category-modal').classList.add('active');
+        }
+
+        function addSubcategory(parentId) {
+            editingCategoryId = null;
+            document.getElementById('category-modal-title').textContent = 'Add Subcategory';
+            
+            const parent = categories.find(c => c.id === parentId);
+            document.getElementById('cat-name').value = '';
+            document.getElementById('cat-type').value = parent.type;
+            document.getElementById('cat-color').value = parent.color || '#007bff';
+            document.getElementById('cat-is-sub').checked = true;
+            document.getElementById('cat-parent-group').style.display = 'block';
+            document.getElementById('cat-parent').value = parentId;
+            
+            document.getElementById('category-modal').classList.add('active');
+        }
+
+        function closeCategoryModal() {
+            document.getElementById('category-modal').classList.remove('active');
+            editingCategoryId = null;
+        }
+
+        async function saveCategory() {
+            const data = {
+                name: document.getElementById('cat-name').value,
+                type: document.getElementById('cat-type').value,
+                color: document.getElementById('cat-color').value
+            };
+            
+            if (document.getElementById('cat-is-sub').checked) {
+                data.parent_id = parseInt(document.getElementById('cat-parent').value);
+            }
+            
+            if (editingCategoryId) {
+                await fetch(`/api/categories/${editingCategoryId}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+            } else {
+                await fetch('/api/categories', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+            }
+            
+            closeCategoryModal();
+            await loadCategories();
+        }
+
+        function editCategory(id) {
+            openCategoryModal(id);
+        }
+
+        async function deleteCategory(id) {
+            if (!confirm('Delete this category?')) return;
+            await fetch(`/api/categories/${id}`, {method: 'DELETE'});
+            await loadCategories();
+        }
+
+        function findCategoryById(id) {
+            for (const cat of categories) {
+                if (cat.id === id) return cat;
+                for (const sub of cat.subcategories || []) {
+                    if (sub.id === id) return {...sub, parent_id: cat.id};
+                }
+            }
+            return null;
+        }
+
+        function populateCategorySelects() {
+            const selects = ['rule-category', 'cat-parent', 'fc-category'];
+            selects.forEach(selectId => {
+                const select = document.getElementById(selectId);
+                select.innerHTML = '<option value="">Select...</option>';
+                categories.forEach(cat => {
+                    const opt = document.createElement('option');
+                    opt.value = cat.id;
+                    opt.textContent = cat.name;
+                    select.appendChild(opt);
+                    
+                    (cat.subcategories || []).forEach(sub => {
+                        const subOpt = document.createElement('option');
+                        subOpt.value = sub.id;
+                        subOpt.textContent = `  ${sub.name}`;
+                        select.appendChild(subOpt);
+                    });
+                });
+            });
+        }
+
+        document.getElementById('cat-is-sub').addEventListener('change', function() {
+            document.getElementById('cat-parent-group').style.display = this.checked ? 'block' : 'none';
+        });
+
+        // Rules
+        async function loadRules() {
+            const res = await fetch('/api/category-rules');
+            rules = await res.json();
+            renderRules();
+        }
+
+        function renderRules() {
+            const tbody = document.getElementById('rules-body');
+            tbody.innerHTML = '';
+            
+            rules.forEach(rule => {
+                const cat = findCategoryById(rule.category_id);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${rule.pattern}</td>
+                    <td>${cat?.name || 'Unknown'}</td>
+                    <td>${rule.priority}</td>
+                    <td>
+                        <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteRule(${rule.id})">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        async function addRule() {
+            const data = {
+                pattern: document.getElementById('rule-pattern').value,
+                category_id: parseInt(document.getElementById('rule-category').value),
+                priority: parseInt(document.getElementById('rule-priority').value)
+            };
+            
+            await fetch('/api/category-rules', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            
+            document.getElementById('rule-pattern').value = '';
+            document.getElementById('rule-category').value = '';
+            document.getElementById('rule-priority').value = '5';
+            
+            await loadRules();
+        }
+
+        async function deleteRule(id) {
+            if (!confirm('Delete this rule?')) return;
+            await fetch(`/api/category-rules/${id}`, {method: 'DELETE'});
+            await loadRules();
+        }
+
+        // Accounts
+        async function loadAccounts() {
+            const res = await fetch('/api/accounts');
+            accounts = await res.json();
+            renderAccounts();
+        }
+
+        function renderAccounts() {
+            const tbody = document.getElementById('accounts-body');
+            tbody.innerHTML = '';
+            
+            accounts.forEach(acc => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${acc.name}</td>
+                    <td>${acc.number || '-'}</td>
+                    <td>$${parseFloat(acc.starting_balance).toFixed(2)}</td>
+                    <td>
+                        <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteAccount(${acc.id})">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        async function addAccount() {
+            const data = {
+                name: document.getElementById('account-name').value,
+                number: document.getElementById('account-number').value,
+                starting_balance: parseFloat(document.getElementById('account-balance').value)
+            };
+            
+            await fetch('/api/accounts', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            
+            document.getElementById('account-name').value = '';
+            document.getElementById('account-number').value = '';
+            document.getElementById('account-balance').value = '0';
+            
+            await loadAccounts();
+        }
+
+        async function deleteAccount(id) {
+            if (!confirm('Delete this account? This will also delete all associated transactions.')) return;
+            await fetch(`/api/accounts/${id}`, {method: 'DELETE'});
+            await loadAccounts();
+        }
+
+        // Forecast
+        async function loadForecast() {
+            const res = await fetch('/api/forecast');
+            forecast = await res.json();
+            renderForecast();
+        }
+
+        function renderForecast() {
+            const tbody = document.getElementById('forecast-body');
+            tbody.innerHTML = '';
+            
+            forecast.forEach(item => {
+                const cat = findCategoryById(item.category_id);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${item.name}</td>
+                    <td>${cat?.name || 'Unknown'}</td>
+                    <td>$${parseFloat(item.amount).toFixed(2)}</td>
+                    <td>${item.frequency}</td>
+                    <td>${item.type}</td>
+                    <td>
+                        <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteForecast(${item.id})">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function openForecastModal() {
+            document.getElementById('fc-name').value = '';
+            document.getElementById('fc-category').value = '';
+            document.getElementById('fc-amount').value = '';
+            document.getElementById('fc-frequency').value = 'monthly';
+            document.getElementById('fc-type').value = 'fixed';
+            document.getElementById('fc-start').value = '';
+            document.getElementById('forecast-modal').classList.add('active');
+        }
+
+        function closeForecastModal() {
+            document.getElementById('forecast-modal').classList.remove('active');
+        }
+
+        async function saveForecast() {
+            const data = {
+                name: document.getElementById('fc-name').value,
+                category_id: parseInt(document.getElementById('fc-category').value),
+                amount: parseFloat(document.getElementById('fc-amount').value),
+                frequency: document.getElementById('fc-frequency').value,
+                type: document.getElementById('fc-type').value,
+                start_date: document.getElementById('fc-start').value
+            };
+            
+            await fetch('/api/forecast', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            
+            closeForecastModal();
+            await loadForecast();
+        }
+
+        async function deleteForecast(id) {
+            if (!confirm('Delete this forecast item?')) return;
+            await fetch(`/api/forecast/${id}`, {method: 'DELETE'});
+            await loadForecast();
+        }
+
+        init();
+    </script>
+</body>
+</html>

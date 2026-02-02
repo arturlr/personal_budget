@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Budget - Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
+        .nav { background: #fff; padding: 15px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; gap: 20px; }
+        .nav a { text-decoration: none; color: #333; padding: 8px 16px; border-radius: 4px; }
+        .nav a:hover { background: #f0f0f0; }
+        .nav a.active { background: #007bff; color: white; }
+        .nav a:first-child { font-weight: 600; }
+        .container { max-width: 1400px; margin: 20px auto; padding: 20px; }
+        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .card h3 { font-size: 14px; color: #6c757d; margin-bottom: 10px; }
+        .card .value { font-size: 32px; font-weight: 600; }
+        .card .value.income { color: #28a745; }
+        .card .value.expense { color: #dc3545; }
+        .card .value.net { color: #007bff; }
+        .chart-container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .chart-container h2 { margin-bottom: 20px; font-size: 18px; }
+        .chart-wrapper { position: relative; height: 400px; }
+        .filters { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; }
+        .filters select { padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <a href="/">Personal Budget</a>
+        <a href="/">Transactions</a>
+        <a href="/config">Configuration</a>
+        <a href="/dashboard" class="active">Dashboard</a>
+    </div>
+
+    <div class="container">
+        <h1 style="margin-bottom: 20px;">Dashboard</h1>
+
+        <div class="filters">
+            <label>Year:</label>
+            <select id="year-select" onchange="loadDashboard()"></select>
+            <label>Month:</label>
+            <button onclick="previousMonth()" style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer;">←</button>
+            <select id="month-select" onchange="loadMonthData()">
+                <option value="">All Months</option>
+            </select>
+            <button onclick="nextMonth()" style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer;">→</button>
+            <button onclick="goToToday()" style="padding: 8px 16px; border: 1px solid #007bff; border-radius: 4px; background: #007bff; color: white; cursor: pointer; margin-left: 10px;">Today</button>
+        </div>
+
+        <div class="summary-cards">
+            <div class="card">
+                <h3>Total Income</h3>
+                <div class="value income" id="total-income">$0.00</div>
+            </div>
+            <div class="card">
+                <h3>Total Expenses</h3>
+                <div class="value expense" id="total-expenses">$0.00</div>
+            </div>
+            <div class="card">
+                <h3>Net Cash Flow</h3>
+                <div class="value net" id="net-flow">$0.00</div>
+            </div>
+            <div class="card">
+                <h3>Avg Monthly Expense</h3>
+                <div class="value" id="avg-expense">$0.00</div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h2>Monthly Spending by Category</h2>
+            <div class="chart-wrapper">
+                <canvas id="category-chart"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h2>Income vs Expenses (Monthly)</h2>
+            <div class="chart-wrapper">
+                <canvas id="monthly-chart"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h2>
+                Expense Breakdown
+                <span id="breadcrumb" style="font-size: 14px; color: #6c757d; margin-left: 10px;"></span>
+                <button id="back-btn" onclick="goBackToParent()" style="display: none; margin-left: 10px; padding: 4px 12px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer;">← Back</button>
+            </h2>
+            <div class="chart-wrapper">
+                <canvas id="pie-chart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let categoryChart, monthlyChart, pieChart;
+        let currentYear = new Date().getFullYear();
+        let allCategories = [];
+        let allTransactions = [];
+        let currentParentCategory = null;
+
+        async function init() {
+            populateYearSelect();
+            populateMonthSelect();
+            await loadDashboard();
+        }
+
+        function populateYearSelect() {
+            const select = document.getElementById('year-select');
+            const startYear = 2020;
+            const endYear = new Date().getFullYear() + 1;
+            
+            for (let year = endYear; year >= startYear; year--) {
+                const opt = document.createElement('option');
+                opt.value = year;
+                opt.textContent = year;
+                if (year === currentYear) opt.selected = true;
+                select.appendChild(opt);
+            }
+        }
+
+        function populateMonthSelect() {
+            const select = document.getElementById('month-select');
+            const months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                          'July', 'August', 'September', 'October', 'November', 'December'];
+            
+            months.forEach((month, idx) => {
+                const opt = document.createElement('option');
+                opt.value = idx + 1;
+                opt.textContent = month;
+                select.appendChild(opt);
+            });
+        }
+
+        function previousMonth() {
+            const monthSelect = document.getElementById('month-select');
+            const yearSelect = document.getElementById('year-select');
+            
+            if (!monthSelect.value) {
+                // If "All Months", go to December of current year
+                monthSelect.value = '12';
+            } else {
+                let month = parseInt(monthSelect.value);
+                let year = parseInt(yearSelect.value);
+                
+                month--;
+                if (month < 1) {
+                    month = 12;
+                    year--;
+                    yearSelect.value = year;
+                }
+                monthSelect.value = month;
+            }
+            
+            loadMonthData();
+        }
+
+        function nextMonth() {
+            const monthSelect = document.getElementById('month-select');
+            const yearSelect = document.getElementById('year-select');
+            
+            if (!monthSelect.value) {
+                // If "All Months", go to January of current year
+                monthSelect.value = '1';
+            } else {
+                let month = parseInt(monthSelect.value);
+                let year = parseInt(yearSelect.value);
+                
+                month++;
+                if (month > 12) {
+                    month = 1;
+                    year++;
+                    yearSelect.value = year;
+                }
+                monthSelect.value = month;
+            }
+            
+            loadMonthData();
+        }
+
+        function goToToday() {
+            const today = new Date();
+            document.getElementById('year-select').value = today.getFullYear();
+            document.getElementById('month-select').value = today.getMonth() + 1;
+            currentYear = today.getFullYear();
+            loadMonthData();
+        }
+
+        async function loadDashboard() {
+            currentYear = parseInt(document.getElementById('year-select').value);
+            await Promise.all([
+                loadSummary(),
+                loadMonthlyChart(),
+                loadMonthData()
+            ]);
+        }
+
+        async function loadSummary() {
+            const from = `${currentYear}-01-01`;
+            const to = `${currentYear}-12-31`;
+            
+            const res = await fetch(`/api/transactions?from=${from}&to=${to}&exclude_cc_payments=true`);
+            const transactions = await res.json();
+            
+            const income = transactions.filter(t => t.amount > 0).reduce((sum, t) => sum + t.amount, 0);
+            const expenses = transactions.filter(t => t.amount < 0).reduce((sum, t) => sum + Math.abs(t.amount), 0);
+            const net = income - expenses;
+            
+            document.getElementById('total-income').textContent = `$${income.toFixed(2)}`;
+            document.getElementById('total-expenses').textContent = `$${expenses.toFixed(2)}`;
+            document.getElementById('net-flow').textContent = `$${net.toFixed(2)}`;
+            document.getElementById('avg-expense').textContent = `$${(expenses / 12).toFixed(2)}`;
+        }
+
+        async function loadMonthlyChart() {
+            const from = `${currentYear}-01-01`;
+            const to = `${currentYear}-12-31`;
+            
+            const res = await fetch(`/api/transactions?from=${from}&to=${to}&exclude_cc_payments=true`);
+            const transactions = await res.json();
+            
+            const monthlyData = {};
+            for (let i = 1; i <= 12; i++) {
+                monthlyData[i] = { income: 0, expenses: 0 };
+            }
+            
+            transactions.forEach(t => {
+                const month = new Date(t.date).getMonth() + 1;
+                if (t.amount > 0) {
+                    monthlyData[month].income += t.amount;
+                } else {
+                    monthlyData[month].expenses += Math.abs(t.amount);
+                }
+            });
+            
+            const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const incomeData = Object.values(monthlyData).map(d => d.income);
+            const expenseData = Object.values(monthlyData).map(d => d.expenses);
+            
+            if (monthlyChart) monthlyChart.destroy();
+            
+            const ctx = document.getElementById('monthly-chart').getContext('2d');
+            monthlyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Income',
+                            data: incomeData,
+                            backgroundColor: 'rgba(40, 167, 69, 0.7)',
+                            borderColor: 'rgba(40, 167, 69, 1)',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Expenses',
+                            data: expenseData,
+                            backgroundColor: 'rgba(220, 53, 69, 0.7)',
+                            borderColor: 'rgba(220, 53, 69, 1)',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return '$' + value.toFixed(0);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        async function loadMonthData() {
+            const monthSelect = document.getElementById('month-select').value;
+            
+            if (!monthSelect) {
+                await loadYearCategoryData();
+            } else {
+                await loadMonthCategoryData(monthSelect);
+            }
+        }
+
+        async function loadYearCategoryData() {
+            const from = `${currentYear}-01-01`;
+            const to = `${currentYear}-12-31`;
+            
+            const [txnRes, catRes] = await Promise.all([
+                fetch(`/api/transactions?from=${from}&to=${to}&exclude_cc_payments=true`),
+                fetch('/api/categories')
+            ]);
+            
+            allTransactions = await txnRes.json();
+            allCategories = await catRes.json();
+            
+            currentParentCategory = null;
+            renderPieChartData();
+            
+            const categoryTotals = {};
+            
+            allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+                if (!categoryTotals[t.category_id]) {
+                    categoryTotals[t.category_id] = 0;
+                }
+                categoryTotals[t.category_id] += Math.abs(t.amount);
+            });
+            
+            const sortedCategories = Object.entries(categoryTotals)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 10);
+            
+            const labels = sortedCategories.map(([catId]) => {
+                const cat = findCategory(allCategories, parseInt(catId));
+                return cat?.name || 'Unknown';
+            });
+            
+            const data = sortedCategories.map(([, amount]) => amount);
+            
+            renderCategoryChart(labels, data);
+        }
+
+        async function loadMonthCategoryData(month) {
+            const from = `${currentYear}-${month.padStart(2, '0')}-01`;
+            const lastDay = new Date(currentYear, month, 0).getDate();
+            const to = `${currentYear}-${month.padStart(2, '0')}-${lastDay}`;
+            
+            const [txnRes, catRes] = await Promise.all([
+                fetch(`/api/transactions?from=${from}&to=${to}&exclude_cc_payments=true`),
+                fetch('/api/categories')
+            ]);
+            
+            allTransactions = await txnRes.json();
+            allCategories = await catRes.json();
+            
+            currentParentCategory = null;
+            renderPieChartData();
+            
+            const categoryTotals = {};
+            
+            allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+                if (!categoryTotals[t.category_id]) {
+                    categoryTotals[t.category_id] = 0;
+                }
+                categoryTotals[t.category_id] += Math.abs(t.amount);
+            });
+            
+            const sortedCategories = Object.entries(categoryTotals)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 10);
+            
+            const labels = sortedCategories.map(([catId]) => {
+                const cat = findCategory(allCategories, parseInt(catId));
+                return cat?.name || 'Unknown';
+            });
+            
+            const data = sortedCategories.map(([, amount]) => amount);
+            
+            renderCategoryChart(labels, data);
+        }
+
+        function findCategory(categories, catId) {
+            for (const cat of categories) {
+                if (cat.id === catId) return cat;
+                for (const sub of cat.subcategories || []) {
+                    if (sub.id === catId) return sub;
+                }
+            }
+            return null;
+        }
+
+        function renderCategoryChart(labels, data) {
+            if (categoryChart) categoryChart.destroy();
+            
+            // Group data by parent categories with subcategories
+            const categoryData = {};
+            
+            allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+                const cat = findCategory(allCategories, t.category_id);
+                if (!cat) return;
+                
+                // Find parent category
+                let parent = allCategories.find(c => c.id === t.category_id);
+                let subName = null;
+                
+                if (!parent) {
+                    // This is a subcategory, find its parent
+                    parent = allCategories.find(c => 
+                        c.subcategories && c.subcategories.some(s => s.id === t.category_id)
+                    );
+                    if (parent) {
+                        const sub = parent.subcategories.find(s => s.id === t.category_id);
+                        subName = sub.name;
+                    }
+                }
+                
+                if (parent) {
+                    if (!categoryData[parent.id]) {
+                        categoryData[parent.id] = {
+                            name: parent.name,
+                            subcategories: {}
+                        };
+                    }
+                    
+                    const key = subName || 'Other';
+                    if (!categoryData[parent.id].subcategories[key]) {
+                        categoryData[parent.id].subcategories[key] = 0;
+                    }
+                    categoryData[parent.id].subcategories[key] += Math.abs(t.amount);
+                }
+            });
+            
+            // Sort by total and take top 10
+            const sortedParents = Object.entries(categoryData)
+                .map(([id, data]) => ({
+                    id: parseInt(id),
+                    name: data.name,
+                    total: Object.values(data.subcategories).reduce((sum, val) => sum + val, 0),
+                    subcategories: data.subcategories
+                }))
+                .sort((a, b) => b.total - a.total)
+                .slice(0, 10);
+            
+            const parentLabels = sortedParents.map(p => p.name);
+            
+            // Get all unique subcategory names
+            const allSubNames = new Set();
+            sortedParents.forEach(p => {
+                Object.keys(p.subcategories).forEach(sub => allSubNames.add(sub));
+            });
+            
+            // Create datasets for each subcategory
+            const datasets = Array.from(allSubNames).map((subName, idx) => ({
+                label: subName,
+                data: sortedParents.map(p => p.subcategories[subName] || 0),
+                backgroundColor: [
+                    'rgba(255, 99, 132, 0.7)',
+                    'rgba(54, 162, 235, 0.7)',
+                    'rgba(255, 206, 86, 0.7)',
+                    'rgba(75, 192, 192, 0.7)',
+                    'rgba(153, 102, 255, 0.7)',
+                    'rgba(255, 159, 64, 0.7)',
+                    'rgba(199, 199, 199, 0.7)',
+                    'rgba(83, 102, 255, 0.7)',
+                    'rgba(255, 99, 255, 0.7)',
+                    'rgba(99, 255, 132, 0.7)'
+                ][idx % 10]
+            }));
+            
+            const ctx = document.getElementById('category-chart').getContext('2d');
+            categoryChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: parentLabels,
+                    datasets: datasets
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            stacked: true,
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return '$' + value.toFixed(0);
+                                }
+                            }
+                        },
+                        y: {
+                            stacked: true
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderPieChartData() {
+            let categoryTotals = {};
+            
+            if (currentParentCategory) {
+                // Show subcategories
+                const parent = allCategories.find(c => c.id === currentParentCategory);
+                if (parent && parent.subcategories && parent.subcategories.length > 0) {
+                    parent.subcategories.forEach(sub => {
+                        categoryTotals[sub.id] = 0;
+                    });
+                    
+                    allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+                        if (categoryTotals.hasOwnProperty(t.category_id)) {
+                            categoryTotals[t.category_id] += Math.abs(t.amount);
+                        }
+                    });
+                    
+                    document.getElementById('breadcrumb').textContent = `> ${parent.name}`;
+                    document.getElementById('back-btn').style.display = 'inline-block';
+                } else {
+                    // No subcategories, show parent categories
+                    currentParentCategory = null;
+                    renderPieChartData();
+                    return;
+                }
+            } else {
+                // Show parent categories only
+                allCategories.forEach(cat => {
+                    categoryTotals[cat.id] = 0;
+                });
+                
+                allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+                    const cat = findCategory(allCategories, t.category_id);
+                    if (cat) {
+                        // Find parent category
+                        const parent = allCategories.find(c => 
+                            c.id === t.category_id || 
+                            (c.subcategories && c.subcategories.some(s => s.id === t.category_id))
+                        );
+                        if (parent && categoryTotals.hasOwnProperty(parent.id)) {
+                            categoryTotals[parent.id] += Math.abs(t.amount);
+                        }
+                    }
+                });
+                
+                document.getElementById('breadcrumb').textContent = '';
+                document.getElementById('back-btn').style.display = 'none';
+            }
+            
+            const sortedCategories = Object.entries(categoryTotals)
+                .filter(([, amount]) => amount > 0)
+                .sort((a, b) => b[1] - a[1]);
+            
+            const labels = sortedCategories.map(([catId]) => {
+                const cat = findCategory(allCategories, parseInt(catId));
+                return cat?.name || 'Unknown';
+            });
+            
+            const data = sortedCategories.map(([, amount]) => amount);
+            const categoryIds = sortedCategories.map(([catId]) => parseInt(catId));
+            
+            renderPieChart(labels, data, categoryIds);
+        }
+
+        function goBackToParent() {
+            currentParentCategory = null;
+            renderPieChartData();
+        }
+
+        function renderPieChart(labels, data, categoryIds) {
+            if (pieChart) pieChart.destroy();
+            
+            const ctx = document.getElementById('pie-chart').getContext('2d');
+            pieChart = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: [
+                            'rgba(255, 99, 132, 0.7)',
+                            'rgba(54, 162, 235, 0.7)',
+                            'rgba(255, 206, 86, 0.7)',
+                            'rgba(75, 192, 192, 0.7)',
+                            'rgba(153, 102, 255, 0.7)',
+                            'rgba(255, 159, 64, 0.7)',
+                            'rgba(199, 199, 199, 0.7)',
+                            'rgba(83, 102, 255, 0.7)',
+                            'rgba(255, 99, 255, 0.7)',
+                            'rgba(99, 255, 132, 0.7)'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right'
+                        }
+                    },
+                    onClick: (event, elements) => {
+                        if (elements.length > 0 && !currentParentCategory) {
+                            const index = elements[0].index;
+                            const categoryId = categoryIds[index];
+                            const category = allCategories.find(c => c.id === categoryId);
+                            
+                            if (category && category.subcategories && category.subcategories.length > 0) {
+                                currentParentCategory = categoryId;
+                                renderPieChartData();
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>
