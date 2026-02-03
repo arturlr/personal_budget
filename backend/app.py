@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify, render_template
 from flask_migrate import Migrate
 from models import db, Account, Category, Transaction, CategoryRule, ForecastItem
-from services import importer, categorizer
-from datetime import datetime
+from services import importer, categorizer, accrual
+from datetime import datetime, date
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///budget.db'
@@ -26,6 +26,10 @@ def dashboard():
 @app.route('/cashflow')
 def cashflow():
     return render_template('cashflow.html')
+
+@app.route('/accrual')
+def accrual_view():
+    return render_template('accrual.html')
 
 @app.route('/api')
 def api_index():
@@ -652,6 +656,99 @@ def get_cashflow_transactions():
         'subcategory_id': t.subcategory_id,
         'is_credit_card_payment': t.is_credit_card_payment
     } for t in transactions])
+
+# Accrual Report API endpoints
+@app.route('/api/reports/accrual/income-statement', methods=['GET'])
+def get_accrual_income_statement():
+    """Returns accrual-based income statement for a date range"""
+    from_date = request.args.get('from')
+    to_date = request.args.get('to')
+    account_id = request.args.get('account_id', type=int)
+    
+    # Default to current year if no dates provided
+    if not from_date:
+        from_date = date(date.today().year, 1, 1)
+    else:
+        from_date = datetime.fromisoformat(from_date).date()
+    
+    if not to_date:
+        to_date = date(date.today().year, 12, 31)
+    else:
+        to_date = datetime.fromisoformat(to_date).date()
+    
+    # Get accrual-based income/expense
+    result = accrual.calculate_accrual_income_expense(from_date, to_date, account_id)
+    
+    # Get monthly breakdown
+    monthly = accrual.get_monthly_accrual_breakdown(from_date, to_date, account_id)
+    
+    # Format category breakdown for JSON
+    by_category = [{
+        'category_id': cat['category_id'],
+        'category_name': cat['category_name'],
+        'category_type': cat['category_type'],
+        'income': float(cat['income']),
+        'expenses': float(cat['expenses']),
+        'net': float(cat['income'] - cat['expenses'])
+    } for cat in result['by_category']]
+    
+    return jsonify({
+        'period': {
+            'from': from_date.isoformat(),
+            'to': to_date.isoformat()
+        },
+        'total_income': float(result['total_income']),
+        'total_expenses': float(result['total_expenses']),
+        'net_income': float(result['net_income']),
+        'by_category': by_category,
+        'monthly_breakdown': monthly
+    })
+
+@app.route('/api/reports/accrual/balance-sheet', methods=['GET'])
+def get_accrual_balance_sheet():
+    """Returns balance sheet with assets, liabilities, and net worth at a point in time"""
+    as_of_date = request.args.get('as_of_date')
+    
+    if as_of_date:
+        as_of_date = datetime.fromisoformat(as_of_date).date()
+    else:
+        as_of_date = date.today()
+    
+    # Get account balances
+    balances = accrual.calculate_account_balances(as_of_date)
+    
+    # Get credit card liability details
+    cc_liability = accrual.calculate_credit_card_liability(as_of_date)
+    
+    # Separate assets and liabilities
+    assets = []
+    liabilities = []
+    
+    for acc in balances['accounts']:
+        acc_data = {
+            'id': acc['id'],
+            'name': acc['name'],
+            'number': acc['number'],
+            'balance': float(abs(acc['balance']))
+        }
+        if acc['is_liability']:
+            liabilities.append(acc_data)
+        else:
+            assets.append(acc_data)
+    
+    return jsonify({
+        'as_of_date': as_of_date.isoformat(),
+        'assets': {
+            'accounts': assets,
+            'total': float(balances['total_assets'])
+        },
+        'liabilities': {
+            'accounts': liabilities,
+            'total': float(balances['total_liabilities']),
+            'credit_card_payments_made': float(cc_liability['total_payments'])
+        },
+        'net_worth': float(balances['net_worth'])
+    })
 
 if __name__ == '__main__':
     app.run(debug=True)

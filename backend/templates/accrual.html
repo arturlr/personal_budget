@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Budget - Accrual Reports</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
+        .nav { background: #fff; padding: 15px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; gap: 20px; }
+        .nav a { text-decoration: none; color: #333; padding: 8px 16px; border-radius: 4px; }
+        .nav a:hover { background: #f0f0f0; }
+        .nav a.active { background: #007bff; color: white; }
+        .nav a:first-child { font-weight: 600; }
+        .container { max-width: 1400px; margin: 20px auto; padding: 20px; }
+        .filters { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
+        .filters select, .filters input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+        .filters button { padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .filters button:hover { background: #0056b3; }
+        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .summary-card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .summary-card h4 { font-size: 14px; color: #6c757d; margin-bottom: 8px; }
+        .summary-card .value { font-size: 24px; font-weight: 600; }
+        .summary-card .value.positive { color: #28a745; }
+        .summary-card .value.negative { color: #dc3545; }
+        .section { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .section h2 { margin-bottom: 15px; font-size: 18px; color: #333; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; font-weight: 600; }
+        .amount { text-align: right; }
+        .income { color: #28a745; }
+        .expense { color: #dc3545; }
+        .total-row { font-weight: 600; background: #f8f9fa; }
+        .net-worth-card { background: linear-gradient(135deg, #007bff, #0056b3); color: white; }
+        .net-worth-card h4 { color: rgba(255,255,255,0.8); }
+        .net-worth-card .value { color: white; }
+        .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media (max-width: 768px) {
+            .two-column { grid-template-columns: 1fr; }
+        }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-left: 8px; }
+        .badge-asset { background: #d4edda; color: #155724; }
+        .badge-liability { background: #f8d7da; color: #721c24; }
+        .chart-placeholder { padding: 20px; text-align: center; color: #6c757d; border: 2px dashed #ddd; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <a href="/">Personal Budget</a>
+        <a href="/">Transactions</a>
+        <a href="/config">Configuration</a>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/cashflow">Cash Flow</a>
+        <a href="/accrual" class="active">Accrual</a>
+    </div>
+    <div class="container">
+        <h1 style="margin-bottom: 20px;">Accrual-Based Reports</h1>
+        
+        <div class="filters">
+            <label>From:</label>
+            <input type="date" id="from-date">
+            <label>To:</label>
+            <input type="date" id="to-date">
+            <button onclick="loadReports()">Update Reports</button>
+            <button onclick="setYearRange()" style="background: #6c757d;">Current Year</button>
+        </div>
+
+        <!-- Balance Sheet Summary -->
+        <div class="section">
+            <h2>Balance Sheet (as of end date)</h2>
+            <div id="balance-sheet-summary" class="summary-cards"></div>
+        </div>
+
+        <!-- Balance Sheet Details -->
+        <div class="two-column">
+            <div class="section">
+                <h2>Assets</h2>
+                <div id="assets-table"></div>
+            </div>
+            <div class="section">
+                <h2>Liabilities</h2>
+                <div id="liabilities-table"></div>
+            </div>
+        </div>
+
+        <!-- Income Statement Summary -->
+        <div class="section">
+            <h2>Income Statement (Accrual Basis)</h2>
+            <div id="income-statement-summary" class="summary-cards"></div>
+        </div>
+
+        <!-- Monthly Income/Expense Breakdown -->
+        <div class="section">
+            <h2>Monthly Accrual Breakdown</h2>
+            <div id="monthly-breakdown"></div>
+        </div>
+
+        <!-- Category Breakdown -->
+        <div class="section">
+            <h2>Income &amp; Expense by Category</h2>
+            <div id="category-breakdown"></div>
+        </div>
+    </div>
+
+    <script>
+        async function init() {
+            setYearRange();
+            await loadReports();
+        }
+
+        function setYearRange() {
+            const currentYear = new Date().getFullYear();
+            document.getElementById('from-date').value = `${currentYear}-01-01`;
+            document.getElementById('to-date').value = `${currentYear}-12-31`;
+        }
+
+        async function loadReports() {
+            const fromDate = document.getElementById('from-date').value;
+            const toDate = document.getElementById('to-date').value;
+            
+            await Promise.all([
+                loadBalanceSheet(toDate),
+                loadIncomeStatement(fromDate, toDate)
+            ]);
+        }
+
+        async function loadBalanceSheet(asOfDate) {
+            const res = await fetch(`/api/reports/accrual/balance-sheet?as_of_date=${asOfDate}`);
+            const data = await res.json();
+            
+            // Summary cards
+            const netWorthClass = data.net_worth >= 0 ? 'positive' : 'negative';
+            document.getElementById('balance-sheet-summary').innerHTML = `
+                <div class="summary-card">
+                    <h4>Total Assets</h4>
+                    <div class="value positive">$${data.assets.total.toFixed(2)}</div>
+                </div>
+                <div class="summary-card">
+                    <h4>Total Liabilities</h4>
+                    <div class="value negative">$${data.liabilities.total.toFixed(2)}</div>
+                </div>
+                <div class="summary-card net-worth-card">
+                    <h4>Net Worth</h4>
+                    <div class="value">$${data.net_worth.toFixed(2)}</div>
+                </div>
+                <div class="summary-card">
+                    <h4>CC Payments Made</h4>
+                    <div class="value">$${data.liabilities.credit_card_payments_made.toFixed(2)}</div>
+                </div>
+            `;
+            
+            // Assets table
+            let assetsHtml = '<table><thead><tr><th>Account</th><th class="amount">Balance</th></tr></thead><tbody>';
+            data.assets.accounts.forEach(acc => {
+                assetsHtml += `<tr><td>${acc.name}${acc.number ? ' (' + acc.number + ')' : ''}</td><td class="amount income">$${acc.balance.toFixed(2)}</td></tr>`;
+            });
+            assetsHtml += `<tr class="total-row"><td>Total Assets</td><td class="amount income">$${data.assets.total.toFixed(2)}</td></tr>`;
+            assetsHtml += '</tbody></table>';
+            document.getElementById('assets-table').innerHTML = assetsHtml;
+            
+            // Liabilities table
+            let liabilitiesHtml = '<table><thead><tr><th>Account</th><th class="amount">Balance</th></tr></thead><tbody>';
+            if (data.liabilities.accounts.length === 0) {
+                liabilitiesHtml += '<tr><td colspan="2" style="text-align: center; color: #6c757d;">No liabilities</td></tr>';
+            } else {
+                data.liabilities.accounts.forEach(acc => {
+                    liabilitiesHtml += `<tr><td>${acc.name}${acc.number ? ' (' + acc.number + ')' : ''}</td><td class="amount expense">$${acc.balance.toFixed(2)}</td></tr>`;
+                });
+            }
+            liabilitiesHtml += `<tr class="total-row"><td>Total Liabilities</td><td class="amount expense">$${data.liabilities.total.toFixed(2)}</td></tr>`;
+            liabilitiesHtml += '</tbody></table>';
+            document.getElementById('liabilities-table').innerHTML = liabilitiesHtml;
+        }
+
+        async function loadIncomeStatement(fromDate, toDate) {
+            const res = await fetch(`/api/reports/accrual/income-statement?from=${fromDate}&to=${toDate}`);
+            const data = await res.json();
+            
+            // Summary cards
+            const netClass = data.net_income >= 0 ? 'positive' : 'negative';
+            document.getElementById('income-statement-summary').innerHTML = `
+                <div class="summary-card">
+                    <h4>Total Income (Accrual)</h4>
+                    <div class="value positive">$${data.total_income.toFixed(2)}</div>
+                </div>
+                <div class="summary-card">
+                    <h4>Total Expenses (Accrual)</h4>
+                    <div class="value negative">$${data.total_expenses.toFixed(2)}</div>
+                </div>
+                <div class="summary-card">
+                    <h4>Net Income</h4>
+                    <div class="value ${netClass}">$${data.net_income.toFixed(2)}</div>
+                </div>
+            `;
+            
+            // Monthly breakdown table
+            let monthlyHtml = '<table><thead><tr><th>Month</th><th class="amount">Income</th><th class="amount">Expenses</th><th class="amount">Net</th></tr></thead><tbody>';
+            data.monthly_breakdown.forEach(month => {
+                const netClass = month.net_income >= 0 ? 'income' : 'expense';
+                monthlyHtml += `<tr>
+                    <td>${formatMonth(month.month)}</td>
+                    <td class="amount income">$${month.income.toFixed(2)}</td>
+                    <td class="amount expense">$${month.expenses.toFixed(2)}</td>
+                    <td class="amount ${netClass}">$${month.net_income.toFixed(2)}</td>
+                </tr>`;
+            });
+            monthlyHtml += `<tr class="total-row">
+                <td>Total</td>
+                <td class="amount income">$${data.total_income.toFixed(2)}</td>
+                <td class="amount expense">$${data.total_expenses.toFixed(2)}</td>
+                <td class="amount ${netClass}">$${data.net_income.toFixed(2)}</td>
+            </tr>`;
+            monthlyHtml += '</tbody></table>';
+            document.getElementById('monthly-breakdown').innerHTML = monthlyHtml;
+            
+            // Category breakdown
+            let categoryHtml = '<table><thead><tr><th>Category</th><th>Type</th><th class="amount">Income</th><th class="amount">Expenses</th><th class="amount">Net</th></tr></thead><tbody>';
+            
+            // Sort by total (income + expenses) descending
+            const sortedCategories = data.by_category.sort((a, b) => {
+                const totalA = a.income + a.expenses;
+                const totalB = b.income + b.expenses;
+                return totalB - totalA;
+            });
+            
+            sortedCategories.forEach(cat => {
+                const netClass = cat.net >= 0 ? 'income' : 'expense';
+                const typeBadge = cat.category_type === 'income' ? 
+                    '<span class="badge badge-asset">Income</span>' : 
+                    '<span class="badge badge-liability">Expense</span>';
+                categoryHtml += `<tr>
+                    <td>${cat.category_name}${typeBadge}</td>
+                    <td>${cat.category_type || '-'}</td>
+                    <td class="amount income">${cat.income > 0 ? '$' + cat.income.toFixed(2) : '-'}</td>
+                    <td class="amount expense">${cat.expenses > 0 ? '$' + cat.expenses.toFixed(2) : '-'}</td>
+                    <td class="amount ${netClass}">$${cat.net.toFixed(2)}</td>
+                </tr>`;
+            });
+            categoryHtml += '</tbody></table>';
+            document.getElementById('category-breakdown').innerHTML = categoryHtml;
+        }
+
+        function formatMonth(monthStr) {
+            const [year, month] = monthStr.split('-');
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            return months[parseInt(month) - 1] + ' ' + year;
+        }
+
+        init();
+    </script>
+</body>
+</html>
