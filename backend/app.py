@@ -23,6 +23,10 @@ def config():
 def dashboard():
     return render_template('dashboard.html')
 
+@app.route('/cashflow')
+def cashflow():
+    return render_template('cashflow.html')
+
 @app.route('/api')
 def api_index():
     return {'status': 'ok', 'message': 'Personal Finance API'}
@@ -334,6 +338,320 @@ def delete_forecast(id):
     db.session.delete(item)
     db.session.commit()
     return jsonify({'status': 'deleted'})
+
+# Dashboard API endpoints
+@app.route('/api/dashboard/summary', methods=['GET'])
+def get_dashboard_summary():
+    from_date = request.args.get('from')
+    to_date = request.args.get('to')
+    account_id = request.args.get('account_id', type=int)
+    
+    query = Transaction.query.filter_by(is_approved=True)
+    
+    if from_date:
+        query = query.filter(Transaction.date >= datetime.fromisoformat(from_date).date())
+    if to_date:
+        query = query.filter(Transaction.date <= datetime.fromisoformat(to_date).date())
+    if account_id:
+        query = query.filter_by(account_id=account_id)
+    
+    transactions = query.all()
+    
+    total_income = sum(float(t.amount) for t in transactions if float(t.amount) > 0)
+    total_expenses = sum(abs(float(t.amount)) for t in transactions if float(t.amount) < 0)
+    net = total_income - total_expenses
+    
+    return jsonify({
+        'total_income': total_income,
+        'total_expenses': total_expenses,
+        'net': net,
+        'budget_variance': 0
+    })
+
+# Cash Flow Report API endpoints
+@app.route('/api/reports/cashflow/monthly', methods=['GET'])
+def get_cashflow_monthly():
+    """Monthly Net Cash Flow - Returns net cash flow data with optional date range filters"""
+    from_date = request.args.get('from')
+    to_date = request.args.get('to')
+    account_id = request.args.get('account_id', type=int)
+    
+    # Build raw SQL query using SQLite strftime for date grouping
+    sql = """
+        SELECT strftime('%Y-%m', date) AS month,
+               SUM(amount) AS net_cash
+        FROM transactions
+        WHERE is_approved = 1
+    """
+    params = {}
+    
+    if from_date:
+        sql += " AND date >= :from_date"
+        params['from_date'] = from_date
+    if to_date:
+        sql += " AND date <= :to_date"
+        params['to_date'] = to_date
+    if account_id:
+        sql += " AND account_id = :account_id"
+        params['account_id'] = account_id
+    
+    sql += " GROUP BY month ORDER BY month"
+    
+    result = db.session.execute(db.text(sql), params)
+    rows = result.fetchall()
+    
+    return jsonify([{
+        'month': row[0],
+        'net_cash': float(row[1]) if row[1] else 0
+    } for row in rows])
+
+@app.route('/api/reports/cashflow/by-category', methods=['GET'])
+def get_cashflow_by_category():
+    """Returns spending and income breakdown by category"""
+    from_date = request.args.get('from')
+    to_date = request.args.get('to')
+    account_id = request.args.get('account_id', type=int)
+    type_filter = request.args.get('type')  # income or expense
+    
+    # Build SQL query for spending by category
+    spending_sql = """
+        SELECT strftime('%Y-%m', t.date) AS month,
+               c.id AS category_id,
+               c.name AS category,
+               sc.id AS subcategory_id,
+               sc.name AS subcategory,
+               c.type AS category_type,
+               SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END) AS spending,
+               SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income
+        FROM transactions t
+        LEFT JOIN categories c ON t.category_id = c.id
+        LEFT JOIN categories sc ON t.subcategory_id = sc.id
+        WHERE t.is_approved = 1 AND t.is_credit_card_payment = 0
+    """
+    params = {}
+    
+    if from_date:
+        spending_sql += " AND t.date >= :from_date"
+        params['from_date'] = from_date
+    if to_date:
+        spending_sql += " AND t.date <= :to_date"
+        params['to_date'] = to_date
+    if account_id:
+        spending_sql += " AND t.account_id = :account_id"
+        params['account_id'] = account_id
+    if type_filter:
+        spending_sql += " AND c.type = :type_filter"
+        params['type_filter'] = type_filter
+    
+    spending_sql += " GROUP BY month, c.id, sc.id ORDER BY month, category"
+    
+    result = db.session.execute(db.text(spending_sql), params)
+    rows = result.fetchall()
+    
+    return jsonify([{
+        'month': row[0],
+        'category_id': row[1],
+        'category': row[2] or 'Uncategorized',
+        'subcategory_id': row[3],
+        'subcategory': row[4],
+        'category_type': row[5],
+        'spending': float(row[6]) if row[6] else 0,
+        'income': float(row[7]) if row[7] else 0
+    } for row in rows])
+
+@app.route('/api/reports/cashflow/summary', methods=['GET'])
+def get_cashflow_summary():
+    """Returns overall cash flow summary statistics"""
+    from_date = request.args.get('from')
+    to_date = request.args.get('to')
+    account_id = request.args.get('account_id', type=int)
+    
+    # Build SQL query for summary
+    sql = """
+        SELECT 
+            SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS total_income,
+            SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END) AS total_expenses,
+            SUM(amount) AS net_cash_flow,
+            COUNT(*) AS transaction_count
+        FROM transactions
+        WHERE is_approved = 1 AND is_credit_card_payment = 0
+    """
+    params = {}
+    
+    if from_date:
+        sql += " AND date >= :from_date"
+        params['from_date'] = from_date
+    if to_date:
+        sql += " AND date <= :to_date"
+        params['to_date'] = to_date
+    if account_id:
+        sql += " AND account_id = :account_id"
+        params['account_id'] = account_id
+    
+    result = db.session.execute(db.text(sql), params)
+    row = result.fetchone()
+    
+    # Get month count for averages
+    month_sql = """
+        SELECT COUNT(DISTINCT strftime('%Y-%m', date)) AS month_count
+        FROM transactions
+        WHERE is_approved = 1
+    """
+    if from_date:
+        month_sql += " AND date >= :from_date"
+    if to_date:
+        month_sql += " AND date <= :to_date"
+    if account_id:
+        month_sql += " AND account_id = :account_id"
+    
+    month_result = db.session.execute(db.text(month_sql), params)
+    month_count = month_result.fetchone()[0] or 1
+    
+    total_income = float(row[0]) if row[0] else 0
+    total_expenses = float(row[1]) if row[1] else 0
+    net_cash_flow = float(row[2]) if row[2] else 0
+    transaction_count = row[3] or 0
+    
+    return jsonify({
+        'total_income': total_income,
+        'total_expenses': total_expenses,
+        'net_cash_flow': net_cash_flow,
+        'transaction_count': transaction_count,
+        'avg_monthly_income': total_income / month_count if month_count > 0 else 0,
+        'avg_monthly_expenses': total_expenses / month_count if month_count > 0 else 0,
+        'avg_monthly_net': net_cash_flow / month_count if month_count > 0 else 0,
+        'month_count': month_count
+    })
+
+@app.route('/api/reports/cashflow/account-balances', methods=['GET'])
+def get_account_balances():
+    """Returns current balance for each account"""
+    as_of_date = request.args.get('as_of_date')
+    
+    # Build SQL query for account balances
+    sql = """
+        SELECT a.id,
+               a.name,
+               a.number,
+               a.starting_balance,
+               a.starting_balance_date,
+               COALESCE(SUM(t.amount), 0) AS transaction_sum,
+               a.starting_balance + COALESCE(SUM(t.amount), 0) AS current_balance
+        FROM accounts a
+        LEFT JOIN transactions t ON a.id = t.account_id AND t.is_approved = 1
+    """
+    params = {}
+    
+    if as_of_date:
+        sql += " AND t.date <= :as_of_date"
+        params['as_of_date'] = as_of_date
+    
+    sql += " GROUP BY a.id ORDER BY a.name"
+    
+    result = db.session.execute(db.text(sql), params)
+    rows = result.fetchall()
+    
+    total_balance = 0
+    accounts = []
+    
+    for row in rows:
+        balance = float(row[6]) if row[6] else float(row[3]) if row[3] else 0
+        total_balance += balance
+        accounts.append({
+            'id': row[0],
+            'account': row[1],
+            'number': row[2],
+            'starting_balance': float(row[3]) if row[3] else 0,
+            'starting_balance_date': row[4].isoformat() if row[4] else None,
+            'transaction_sum': float(row[5]) if row[5] else 0,
+            'balance': balance
+        })
+    
+    return jsonify({
+        'accounts': accounts,
+        'total_balance': total_balance
+    })
+
+@app.route('/api/reports/cashflow/credit-card-payments', methods=['GET'])
+def get_credit_card_payments():
+    """Returns credit card payment transactions by month"""
+    from_date = request.args.get('from')
+    to_date = request.args.get('to')
+    account_id = request.args.get('account_id', type=int)
+    
+    sql = """
+        SELECT strftime('%Y-%m', t.date) AS month,
+               a.name AS account,
+               SUM(-t.amount) AS amount,
+               COUNT(*) AS payment_count
+        FROM transactions t
+        JOIN accounts a ON t.account_id = a.id
+        WHERE t.is_credit_card_payment = 1 AND t.is_approved = 1
+    """
+    params = {}
+    
+    if from_date:
+        sql += " AND t.date >= :from_date"
+        params['from_date'] = from_date
+    if to_date:
+        sql += " AND t.date <= :to_date"
+        params['to_date'] = to_date
+    if account_id:
+        sql += " AND t.account_id = :account_id"
+        params['account_id'] = account_id
+    
+    sql += " GROUP BY month, a.id ORDER BY month, a.name"
+    
+    result = db.session.execute(db.text(sql), params)
+    rows = result.fetchall()
+    
+    return jsonify([{
+        'month': row[0],
+        'account': row[1],
+        'amount': float(row[2]) if row[2] else 0,
+        'payment_count': row[3]
+    } for row in rows])
+
+@app.route('/api/reports/cashflow/transactions', methods=['GET'])
+def get_cashflow_transactions():
+    """Returns transactions for drill-down functionality (by category/month)"""
+    from_date = request.args.get('from')
+    to_date = request.args.get('to')
+    category_id = request.args.get('category_id', type=int)
+    month = request.args.get('month')  # format: YYYY-MM
+    
+    query = Transaction.query.filter_by(is_approved=True)
+    
+    if from_date:
+        query = query.filter(Transaction.date >= datetime.fromisoformat(from_date).date())
+    if to_date:
+        query = query.filter(Transaction.date <= datetime.fromisoformat(to_date).date())
+    if category_id:
+        query = query.filter(
+            (Transaction.category_id == category_id) | 
+            (Transaction.subcategory_id == category_id)
+        )
+    if month:
+        # Filter by specific month
+        year, mon = month.split('-')
+        from datetime import date
+        import calendar
+        first_day = date(int(year), int(mon), 1)
+        last_day = date(int(year), int(mon), calendar.monthrange(int(year), int(mon))[1])
+        query = query.filter(Transaction.date >= first_day, Transaction.date <= last_day)
+    
+    transactions = query.order_by(Transaction.date.desc()).all()
+    
+    return jsonify([{
+        'id': t.id,
+        'account_id': t.account_id,
+        'date': t.date.isoformat(),
+        'memo': t.memo,
+        'amount': float(t.amount),
+        'category_id': t.category_id,
+        'subcategory_id': t.subcategory_id,
+        'is_credit_card_payment': t.is_credit_card_payment
+    } for t in transactions])
 
 if __name__ == '__main__':
     app.run(debug=True)
