@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Personal Budget - Cash Flow</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
@@ -45,7 +46,6 @@
         <a href="/">Personal Budget</a>
         <a href="/">Transactions</a>
         <a href="/config">Configuration</a>
-        <a href="/dashboard">Dashboard</a>
         <a href="/cashflow" class="active">Cash Flow</a>
         <a href="/accrual">Accrual</a>
     </div>
@@ -72,6 +72,14 @@
             <div id="category-table"></div>
         </div>
 
+        <!-- Expense Breakdown Chart -->
+        <div class="section">
+            <h2>Expense Breakdown</h2>
+            <div style="position: relative; height: 400px;">
+                <canvas id="expense-chart"></canvas>
+            </div>
+        </div>
+
         <!-- Credit Card Payments -->
         <div class="section">
             <h2>Credit Card Payments</h2>
@@ -92,6 +100,7 @@
     <script>
         let currentYear = new Date().getFullYear();
         let categories = [];
+        let expenseChart;
 
         async function init() {
             populateYearSelect();
@@ -119,12 +128,15 @@
                 loadAccountBalances(),
                 loadSummary(from, to),
                 loadCategoryBreakdown(from, to),
-                loadCCPayments(from, to)
+                loadCCPayments(from, to),
+                loadExpenseChart(from, to)
             ]);
         }
 
         async function loadAccountBalances() {
-            const res = await fetch('/api/reports/cashflow/account-balances');
+            const from = `${currentYear}-01-01`;
+            const to = `${currentYear}-12-31`;
+            const res = await fetch(`/api/reports/cashflow/account-balances?from_date=${from}&as_of_date=${to}`);
             const data = await res.json();
             
             let html = '';
@@ -133,11 +145,19 @@
                 html += `<div class="account-card">
                     <h4>${acc.account}</h4>
                     <div class="balance ${cls}">$${acc.balance.toFixed(2)}</div>
+                    <div style="font-size: 12px; margin-top: 8px; color: #6c757d;">
+                        Income: <span style="color: #28a745;">$${acc.income.toFixed(2)}</span><br>
+                        Expenses: <span style="color: #dc3545;">$${acc.expenses.toFixed(2)}</span>
+                    </div>
                 </div>`;
             });
             html += `<div class="account-card total-card">
                 <h4>Total Net Worth</h4>
                 <div class="balance">$${data.total_balance.toFixed(2)}</div>
+                <div style="font-size: 12px; margin-top: 8px; opacity: 0.9;">
+                    Income: $${data.total_income.toFixed(2)}<br>
+                    Expenses: $${data.total_expenses.toFixed(2)}
+                </div>
             </div>`;
             document.getElementById('account-balances').innerHTML = html;
         }
@@ -163,10 +183,11 @@
             
             data.forEach(row => {
                 const cat = row.category || 'Uncategorized';
-                if (!catData[cat]) catData[cat] = { spending: {}, income: {}, type: row.category_type, id: row.category_id };
+                const displayName = row.subcategory ? `${cat}: ${row.subcategory}` : cat;
+                if (!catData[displayName]) catData[displayName] = { spending: {}, income: {}, type: row.category_type, id: row.category_id, topCategory: cat };
                 const mon = parseInt(row.month.split('-')[1]) - 1;
-                catData[cat].spending[mon] = (catData[cat].spending[mon] || 0) + row.spending;
-                catData[cat].income[mon] = (catData[cat].income[mon] || 0) + row.income;
+                catData[displayName].spending[mon] = (catData[displayName].spending[mon] || 0) + row.spending;
+                catData[displayName].income[mon] = (catData[displayName].income[mon] || 0) + row.income;
             });
 
             let html = '<table><thead><tr><th>Category</th>';
@@ -177,14 +198,14 @@
                 const totalA = Object.values(a[1].spending).reduce((s,v) => s+v, 0);
                 const totalB = Object.values(b[1].spending).reduce((s,v) => s+v, 0);
                 return totalB - totalA;
-            }).forEach(([cat, d]) => {
+            }).forEach(([displayName, d]) => {
                 let total = 0;
-                html += `<tr class="clickable" onclick="drillDown('${d.id}', '${cat}')"><td>${cat}</td>`;
+                html += `<tr class="clickable" onclick="drillDown('${d.id}', '${displayName}')"><td>${displayName}</td>`;
                 for (let i = 0; i < 12; i++) {
                     const val = d.type === 'income' ? (d.income[i] || 0) : (d.spending[i] || 0);
                     total += val;
                     const cls = d.type === 'income' ? 'income' : 'expense';
-                    html += `<td class="amount ${cls}" onclick="event.stopPropagation(); drillDownMonth('${d.id}', '${cat}', ${currentYear}, ${i+1})">${val > 0 ? '$' + val.toFixed(2) : '-'}</td>`;
+                    html += `<td class="amount ${cls}" onclick="event.stopPropagation(); drillDownMonth('${d.id}', '${displayName}', ${currentYear}, ${i+1})">${val > 0 ? '$' + val.toFixed(2) : '-'}</td>`;
                 }
                 const cls = d.type === 'income' ? 'income' : 'expense';
                 html += `<td class="amount ${cls}"><strong>$${total.toFixed(2)}</strong></td></tr>`;
@@ -240,6 +261,51 @@
 
         function closeModal() {
             document.getElementById('txn-modal').style.display = 'none';
+        }
+
+        async function loadExpenseChart(from, to) {
+            const res = await fetch(`/api/reports/cashflow/by-category?from=${from}&to=${to}&type=expense`);
+            const data = await res.json();
+            
+            const catTotals = {};
+            data.forEach(row => {
+                const cat = row.category || 'Uncategorized';
+                const displayName = row.subcategory ? `${cat}: ${row.subcategory}` : cat;
+                catTotals[displayName] = (catTotals[displayName] || 0) + row.spending;
+            });
+            
+            const sorted = Object.entries(catTotals).sort((a, b) => b[1] - a[1]).slice(0, 10);
+            const labels = sorted.map(([cat]) => cat);
+            const values = sorted.map(([, val]) => val);
+            const colors = ['#dc3545', '#fd7e14', '#ffc107', '#28a745', '#20c997', '#17a2b8', '#007bff', '#6610f2', '#6f42c1', '#e83e8c'];
+            
+            if (expenseChart) expenseChart.destroy();
+            
+            const ctx = document.getElementById('expense-chart').getContext('2d');
+            expenseChart = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: values,
+                        backgroundColor: colors
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'right' },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.label + ': $' + context.parsed.toFixed(2);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
         }
 
         window.onclick = function(e) {

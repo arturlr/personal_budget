@@ -135,24 +135,41 @@ def calculate_accrual_income_expense(from_date, to_date, account_id=None):
         else:
             total_expenses += abs(accrued_amount)
         
-        # Track by category
-        cat_id = txn.category_id or 0
-        cat_name = txn.category.name if txn.category else 'Uncategorized'
-        cat_type = txn.category.type if txn.category else ('income' if accrued_amount > 0 else 'expense')
+        # Track by category - handle case where category might be a subcategory
+        cat = txn.category
+        if cat and cat.parent_id:
+            # This is a subcategory, use parent as category
+            parent_cat = cat.parent
+            cat_id = parent_cat.id
+            cat_name = parent_cat.name
+            subcat_name = cat.name
+            cat_type = parent_cat.type
+        else:
+            # This is a top-level category
+            cat_id = txn.category_id or 0
+            cat_name = cat.name if cat else 'Uncategorized'
+            subcat_name = txn.subcategory.name if txn.subcategory else None
+            cat_type = cat.type if cat else ('income' if accrued_amount > 0 else 'expense')
         
-        if cat_id not in category_totals:
-            category_totals[cat_id] = {
+        display_name = f"{cat_name}: {subcat_name}" if subcat_name else cat_name
+        
+        # Use a unique key combining category and subcategory
+        subcat_id = cat.id if (cat and cat.parent_id) else (txn.subcategory_id or 0)
+        key = f"{cat_id}_{subcat_id}"
+        
+        if key not in category_totals:
+            category_totals[key] = {
                 'category_id': cat_id,
-                'category_name': cat_name,
+                'category_name': display_name,
                 'category_type': cat_type,
                 'income': Decimal('0'),
                 'expenses': Decimal('0')
             }
         
         if accrued_amount > 0:
-            category_totals[cat_id]['income'] += accrued_amount
+            category_totals[key]['income'] += accrued_amount
         else:
-            category_totals[cat_id]['expenses'] += abs(accrued_amount)
+            category_totals[key]['expenses'] += abs(accrued_amount)
     
     return {
         'total_income': total_income,
@@ -319,3 +336,67 @@ def get_monthly_accrual_breakdown(from_date, to_date, account_id=None):
         current = next_month
     
     return results
+
+
+def get_monthly_by_parent_category(from_date, to_date, account_id=None):
+    """
+    Get monthly breakdown by parent category only (no subcategories).
+    """
+    from models import Transaction, Category
+    
+    query = Transaction.query.filter(
+        Transaction.is_approved == True,
+        Transaction.is_credit_card_payment == False
+    )
+    
+    if account_id:
+        query = query.filter(Transaction.account_id == account_id)
+    
+    transactions = query.all()
+    
+    # Group by month and parent category
+    monthly_data = {}
+    
+    for txn in transactions:
+        accrued_amount = get_accrual_amount_for_period(txn, from_date, to_date)
+        if accrued_amount == 0:
+            continue
+        
+        month = txn.date.strftime('%Y-%m')
+        
+        # Get parent category
+        cat = txn.category
+        if cat and cat.parent_id:
+            parent_cat = cat.parent
+            cat_id = parent_cat.id
+            cat_name = parent_cat.name
+        else:
+            cat_id = txn.category_id or 0
+            cat_name = cat.name if cat else 'Uncategorized'
+        
+        key = f"{month}_{cat_id}"
+        
+        if key not in monthly_data:
+            monthly_data[key] = {
+                'month': month,
+                'category_id': cat_id,
+                'category_name': cat_name,
+                'income': Decimal('0'),
+                'expenses': Decimal('0')
+            }
+        
+        if accrued_amount > 0:
+            monthly_data[key]['income'] += accrued_amount
+        else:
+            monthly_data[key]['expenses'] += abs(accrued_amount)
+    
+    # Convert to list and format
+    results = [{
+        'month': v['month'],
+        'category_id': v['category_id'],
+        'category_name': v['category_name'],
+        'income': float(v['income']),
+        'expenses': float(v['expenses'])
+    } for v in monthly_data.values()]
+    
+    return sorted(results, key=lambda x: (x['month'], x['category_name']))

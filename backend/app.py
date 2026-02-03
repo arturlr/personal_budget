@@ -19,10 +19,6 @@ def index():
 def config():
     return render_template('config.html')
 
-@app.route('/dashboard')
-def dashboard():
-    return render_template('dashboard.html')
-
 @app.route('/cashflow')
 def cashflow():
     return render_template('cashflow.html')
@@ -173,8 +169,19 @@ def update_category(id):
 @app.route('/api/categories/<int:id>', methods=['DELETE'])
 def delete_category(id):
     category = Category.query.get_or_404(id)
+    
+    # Check if category has subcategories
     if category.subcategories:
-        return jsonify({'error': 'Cannot delete category with subcategories'}), 400
+        return jsonify({'error': 'Cannot delete category with subcategories. Delete subcategories first.'}), 400
+    
+    # Check if category is used in transactions
+    txn_count = Transaction.query.filter(
+        (Transaction.category_id == id) | (Transaction.subcategory_id == id)
+    ).count()
+    
+    if txn_count > 0:
+        return jsonify({'error': f'Cannot delete category. It is used in {txn_count} transaction(s). Reassign transactions first.'}), 400
+    
     db.session.delete(category)
     db.session.commit()
     return jsonify({'status': 'deleted'})
@@ -418,17 +425,19 @@ def get_cashflow_by_category():
     type_filter = request.args.get('type')  # income or expense
     
     # Build SQL query for spending by category
+    # Handle case where category_id might be a subcategory (has parent_id)
     spending_sql = """
         SELECT strftime('%Y-%m', t.date) AS month,
-               c.id AS category_id,
-               c.name AS category,
-               sc.id AS subcategory_id,
-               sc.name AS subcategory,
-               c.type AS category_type,
+               CASE WHEN c.parent_id IS NOT NULL THEN c.parent_id ELSE c.id END AS category_id,
+               CASE WHEN c.parent_id IS NOT NULL THEN parent.name ELSE c.name END AS category,
+               CASE WHEN c.parent_id IS NOT NULL THEN c.id ELSE sc.id END AS subcategory_id,
+               CASE WHEN c.parent_id IS NOT NULL THEN c.name ELSE sc.name END AS subcategory,
+               CASE WHEN c.parent_id IS NOT NULL THEN parent.type ELSE c.type END AS category_type,
                SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END) AS spending,
                SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income
         FROM transactions t
         LEFT JOIN categories c ON t.category_id = c.id
+        LEFT JOIN categories parent ON c.parent_id = parent.id
         LEFT JOIN categories sc ON t.subcategory_id = sc.id
         WHERE t.is_approved = 1 AND t.is_credit_card_payment = 0
     """
@@ -447,7 +456,7 @@ def get_cashflow_by_category():
         spending_sql += " AND c.type = :type_filter"
         params['type_filter'] = type_filter
     
-    spending_sql += " GROUP BY month, c.id, sc.id ORDER BY month, category"
+    spending_sql += " GROUP BY month, category_id, subcategory_id ORDER BY month, category"
     
     result = db.session.execute(db.text(spending_sql), params)
     rows = result.fetchall()
@@ -529,51 +538,77 @@ def get_cashflow_summary():
 
 @app.route('/api/reports/cashflow/account-balances', methods=['GET'])
 def get_account_balances():
-    """Returns current balance for each account"""
+    """Returns current balance and income/expense summary for each bank account"""
     as_of_date = request.args.get('as_of_date')
+    from_date = request.args.get('from_date')
     
-    # Build SQL query for account balances
-    sql = """
+    params = {}
+    
+    # Build date filter for CASE statements
+    if from_date and as_of_date:
+        date_filter = " AND t.date >= :from_date AND t.date <= :as_of_date"
+        params['from_date'] = from_date
+        params['as_of_date'] = as_of_date
+    elif from_date:
+        date_filter = " AND t.date >= :from_date"
+        params['from_date'] = from_date
+    elif as_of_date:
+        date_filter = " AND t.date <= :as_of_date"
+        params['as_of_date'] = as_of_date
+    else:
+        date_filter = ""
+    
+    # Build SQL query
+    sql = f"""
         SELECT a.id,
                a.name,
                a.number,
                a.starting_balance,
                a.starting_balance_date,
-               COALESCE(SUM(t.amount), 0) AS transaction_sum,
-               a.starting_balance + COALESCE(SUM(t.amount), 0) AS current_balance
+               COALESCE(SUM(CASE WHEN t.is_approved = 1 THEN t.amount ELSE 0 END), 0) AS transaction_sum,
+               COALESCE(a.starting_balance, 0) + COALESCE(SUM(CASE WHEN t.is_approved = 1 THEN t.amount ELSE 0 END), 0) AS current_balance,
+               COALESCE(SUM(CASE WHEN t.is_approved = 1 AND t.amount > 0 AND t.is_credit_card_payment = 0{date_filter} THEN t.amount ELSE 0 END), 0) AS income,
+               COALESCE(SUM(CASE WHEN t.is_approved = 1 AND t.amount < 0 AND t.is_credit_card_payment = 0{date_filter} THEN -t.amount ELSE 0 END), 0) AS expenses
         FROM accounts a
-        LEFT JOIN transactions t ON a.id = t.account_id AND t.is_approved = 1
+        LEFT JOIN transactions t ON a.id = t.account_id
+        GROUP BY a.id 
+        ORDER BY a.name
     """
-    params = {}
-    
-    if as_of_date:
-        sql += " AND t.date <= :as_of_date"
-        params['as_of_date'] = as_of_date
-    
-    sql += " GROUP BY a.id ORDER BY a.name"
     
     result = db.session.execute(db.text(sql), params)
     rows = result.fetchall()
     
     total_balance = 0
+    total_income = 0
+    total_expenses = 0
     accounts = []
     
     for row in rows:
-        balance = float(row[6]) if row[6] else float(row[3]) if row[3] else 0
+        balance = float(row[6]) if row[6] is not None else 0
+        income = float(row[7]) if row[7] is not None else 0
+        expenses = float(row[8]) if row[8] is not None else 0
+        
         total_balance += balance
+        total_income += income
+        total_expenses += expenses
+        
         accounts.append({
             'id': row[0],
             'account': row[1],
             'number': row[2],
             'starting_balance': float(row[3]) if row[3] else 0,
-            'starting_balance_date': row[4].isoformat() if row[4] else None,
+            'starting_balance_date': row[4] if row[4] else None,
             'transaction_sum': float(row[5]) if row[5] else 0,
-            'balance': balance
+            'balance': balance,
+            'income': income,
+            'expenses': expenses
         })
     
     return jsonify({
         'accounts': accounts,
-        'total_balance': total_balance
+        'total_balance': total_balance,
+        'total_income': total_income,
+        'total_expenses': total_expenses
     })
 
 @app.route('/api/reports/cashflow/credit-card-payments', methods=['GET'])
@@ -681,6 +716,7 @@ def get_accrual_income_statement():
     
     # Get monthly breakdown
     monthly = accrual.get_monthly_accrual_breakdown(from_date, to_date, account_id)
+    monthly_by_category = accrual.get_monthly_by_parent_category(from_date, to_date, account_id)
     
     # Format category breakdown for JSON
     by_category = [{
@@ -701,7 +737,8 @@ def get_accrual_income_statement():
         'total_expenses': float(result['total_expenses']),
         'net_income': float(result['net_income']),
         'by_category': by_category,
-        'monthly_breakdown': monthly
+        'monthly_breakdown': monthly,
+        'monthly_by_category': monthly_by_category
     })
 
 @app.route('/api/reports/accrual/balance-sheet', methods=['GET'])

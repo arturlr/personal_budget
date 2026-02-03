@@ -55,7 +55,6 @@
         <a href="/" style="font-weight: 600;">Personal Budget</a>
         <a href="/">Transactions</a>
         <a href="/config" class="active">Configuration</a>
-        <a href="/dashboard">Dashboard</a>
         <a href="/cashflow">Cash Flow</a>
         <a href="/accrual">Accrual</a>
     </div>
@@ -71,7 +70,8 @@
         <!-- Categories Section -->
         <div id="categories" class="section active">
             <h2>Categories</h2>
-            <button class="btn btn-success" onclick="openCategoryModal()">+ Add Category</button>
+            <button class="btn" style="background: #6c757d; color: white;" onclick="openBulkImportModal()">📋 Bulk Import Categories</button>
+            
             <div id="categories-tree" style="margin-top: 20px;"></div>
         </div>
 
@@ -245,6 +245,34 @@
         </div>
     </div>
 
+    <!-- Bulk Import Modal -->
+    <div id="bulk-import-modal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <h3>Bulk Import Categories</h3>
+            <p style="color: #6c757d; font-size: 14px; margin-bottom: 15px;">
+                Enter one category per line. Format: <code>Type | Category | Subcategory (optional)</code>
+            </p>
+            <p style="color: #6c757d; font-size: 13px; margin-bottom: 10px;">
+                Examples:<br>
+                <code>income | Salary</code><br>
+                <code>income | Bonus</code><br>
+                <code>expense | Home | Rent</code><br>
+                <code>expense | Home | Utilities</code>
+            </p>
+            <textarea id="bulk-import-text" rows="15" style="width: 100%; padding: 10px; font-family: monospace; font-size: 13px;" placeholder="income | Salary
+income | Bonus
+income | Wire Transfer
+income | Reimbursement
+expense | Home | Rent
+expense | Home | Utilities
+expense | Transportation | Gas"></textarea>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button class="btn btn-success" onclick="processBulkImport()">Import</button>
+                <button class="btn btn-secondary" onclick="closeBulkImportModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let categories = [];
         let rules = [];
@@ -277,35 +305,60 @@
             tree.innerHTML = '';
             
             categories.forEach(cat => {
+                const hasSubcategories = (cat.subcategories || []).length > 0;
+                
                 const div = document.createElement('div');
                 div.className = 'tree-item parent';
                 div.innerHTML = `
-                    <div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        ${hasSubcategories ? `<span class="expand-icon" onclick="toggleSubcategories(${cat.id})" style="cursor: pointer; font-size: 16px; user-select: none;">▶</span>` : '<span style="width: 16px;"></span>'}
                         <span class="badge badge-${cat.type}">${cat.type}</span>
                         <strong>${cat.name}</strong>
-                        ${cat.color ? `<span class="color-preview" style="background: ${cat.color}; display: inline-block; margin-left: 10px;"></span>` : ''}
+                        ${cat.color ? `<span class="color-preview" style="background: ${cat.color}; width: 20px; height: 20px; border-radius: 3px; display: inline-block;"></span>` : ''}
+                        ${hasSubcategories ? `<span style="color: #6c757d; font-size: 12px;">(${cat.subcategories.length})</span>` : ''}
                     </div>
                     <div class="tree-actions">
-                        <button class="btn btn-success" style="font-size: 12px; padding: 4px 8px;" onclick="addSubcategory(${cat.id})">+ Subcategory</button>
-                        <button class="btn btn-primary" style="font-size: 12px; padding: 4px 8px;" onclick="editCategory(${cat.id})">Edit</button>
                         <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteCategory(${cat.id})">Delete</button>
                     </div>
                 `;
                 tree.appendChild(div);
                 
-                (cat.subcategories || []).forEach(sub => {
-                    const subDiv = document.createElement('div');
-                    subDiv.className = 'tree-item child';
-                    subDiv.innerHTML = `
-                        <div>${sub.name}</div>
-                        <div class="tree-actions">
-                            <button class="btn btn-primary" style="font-size: 12px; padding: 4px 8px;" onclick="editCategory(${sub.id})">Edit</button>
-                            <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteCategory(${sub.id})">Delete</button>
-                        </div>
-                    `;
-                    tree.appendChild(subDiv);
-                });
+                if (hasSubcategories) {
+                    const subContainer = document.createElement('div');
+                    subContainer.id = `subcategories-${cat.id}`;
+                    subContainer.style.display = 'none';
+                    
+                    cat.subcategories.forEach(sub => {
+                        const subDiv = document.createElement('div');
+                        subDiv.className = 'tree-item child';
+                        subDiv.innerHTML = `
+                            <div style="padding-left: 30px;">${sub.name}</div>
+                            <div class="tree-actions">
+                                <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteCategory(${sub.id})">Delete</button>
+                            </div>
+                        `;
+                        subContainer.appendChild(subDiv);
+                    });
+                    
+                    tree.appendChild(subContainer);
+                }
             });
+        }
+
+        function toggleSubcategories(categoryId) {
+            const container = document.getElementById(`subcategories-${categoryId}`);
+            const icon = event.target;
+            
+            if (container.style.display === 'none') {
+                container.style.display = 'block';
+                icon.textContent = '▼';
+            } else {
+                container.style.display = 'none';
+                icon.textContent = '▶';
+            }
+        }
+
+        function openCategoryModal(id = null) {
         }
 
         function openCategoryModal(id = null) {
@@ -382,14 +435,21 @@
             await loadCategories();
         }
 
-        function editCategory(id) {
-            openCategoryModal(id);
-        }
-
         async function deleteCategory(id) {
             if (!confirm('Delete this category?')) return;
-            await fetch(`/api/categories/${id}`, {method: 'DELETE'});
+            const res = await fetch(`/api/categories/${id}`, {method: 'DELETE'});
+            const data = await res.json();
+            
+            if (!res.ok) {
+                alert(data.error || 'Failed to delete category');
+                return;
+            }
+            
             await loadCategories();
+        }
+
+        function editCategory(id) {
+            openCategoryModal(id);
         }
 
         function findCategoryById(id) {
@@ -596,6 +656,80 @@
             if (!confirm('Delete this forecast item?')) return;
             await fetch(`/api/forecast/${id}`, {method: 'DELETE'});
             await loadForecast();
+        }
+
+        function openBulkImportModal() {
+            document.getElementById('bulk-import-modal').style.display = 'flex';
+            document.getElementById('bulk-import-text').value = '';
+        }
+
+        function closeBulkImportModal() {
+            document.getElementById('bulk-import-modal').style.display = 'none';
+        }
+
+        async function processBulkImport() {
+            const text = document.getElementById('bulk-import-text').value.trim();
+            if (!text) return;
+            
+            const lines = text.split('\n').filter(l => l.trim());
+            const colors = ['#ff0000', '#ff9900', '#ffcc00', '#00ff00', '#00ccff', '#0066ff', '#9900ff', '#ff00ff'];
+            let colorIndex = 0;
+            
+            const parentMap = {};
+            let created = 0;
+            let skipped = 0;
+            
+            for (const line of lines) {
+                const parts = line.split('|').map(p => p.trim());
+                if (parts.length < 2) continue;
+                
+                const [type, categoryName, subcategoryName] = parts;
+                
+                if (!['income', 'expense', 'transfer'].includes(type)) {
+                    alert(`Invalid type "${type}" on line: ${line}`);
+                    continue;
+                }
+                
+                // Create or get parent category
+                if (!parentMap[categoryName]) {
+                    const existing = categories.find(c => c.name === categoryName);
+                    if (existing) {
+                        parentMap[categoryName] = existing.id;
+                    } else {
+                        const res = await fetch('/api/categories', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                name: categoryName,
+                                type: type,
+                                color: colors[colorIndex++ % colors.length]
+                            })
+                        });
+                        const newCat = await res.json();
+                        parentMap[categoryName] = newCat.id;
+                        created++;
+                    }
+                }
+                
+                // Create subcategory if specified
+                if (subcategoryName) {
+                    await fetch('/api/categories', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            name: subcategoryName,
+                            type: type,
+                            parent_id: parentMap[categoryName],
+                            color: colors[colorIndex++ % colors.length]
+                        })
+                    });
+                    created++;
+                }
+            }
+            
+            alert(`Import complete!\nCreated: ${created} categories`);
+            closeBulkImportModal();
+            await loadCategories();
         }
 
         init();

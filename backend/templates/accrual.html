@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Personal Budget - Accrual Reports</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
@@ -50,7 +51,6 @@
         <a href="/">Personal Budget</a>
         <a href="/">Transactions</a>
         <a href="/config">Configuration</a>
-        <a href="/dashboard">Dashboard</a>
         <a href="/cashflow">Cash Flow</a>
         <a href="/accrual" class="active">Accrual</a>
     </div>
@@ -58,187 +58,240 @@
         <h1 style="margin-bottom: 20px;">Accrual-Based Reports</h1>
         
         <div class="filters">
-            <label>From:</label>
-            <input type="date" id="from-date">
-            <label>To:</label>
-            <input type="date" id="to-date">
-            <button onclick="loadReports()">Update Reports</button>
-            <button onclick="setYearRange()" style="background: #6c757d;">Current Year</button>
+            <label>Year:</label>
+            <select id="year-select" onchange="loadData()"></select>
         </div>
 
-        <!-- Balance Sheet Summary -->
+        <!-- Summary Stats -->
         <div class="section">
-            <h2>Balance Sheet (as of end date)</h2>
-            <div id="balance-sheet-summary" class="summary-cards"></div>
+            <h2>Accrual Summary</h2>
+            <div id="summary-stats" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px;"></div>
         </div>
 
-        <!-- Balance Sheet Details -->
-        <div class="two-column">
-            <div class="section">
-                <h2>Assets</h2>
-                <div id="assets-table"></div>
-            </div>
-            <div class="section">
-                <h2>Liabilities</h2>
-                <div id="liabilities-table"></div>
+        <!-- Weekly Trend Chart -->
+        <div class="section">
+            <h2>Weekly Spending Trend</h2>
+            <div style="position: relative; height: 400px;">
+                <canvas id="weekly-chart"></canvas>
             </div>
         </div>
 
-        <!-- Income Statement Summary -->
+        <!-- Monthly Category Breakdown -->
         <div class="section">
-            <h2>Income Statement (Accrual Basis)</h2>
-            <div id="income-statement-summary" class="summary-cards"></div>
+            <h2>Monthly Category Breakdown</h2>
+            <div id="category-table"></div>
         </div>
 
-        <!-- Monthly Income/Expense Breakdown -->
+        <!-- Expense Breakdown Chart -->
         <div class="section">
-            <h2>Monthly Accrual Breakdown</h2>
-            <div id="monthly-breakdown"></div>
-        </div>
-
-        <!-- Category Breakdown -->
-        <div class="section">
-            <h2>Income &amp; Expense by Category</h2>
-            <div id="category-breakdown"></div>
+            <h2>Expense Breakdown</h2>
+            <div style="position: relative; height: 400px;">
+                <canvas id="expense-chart"></canvas>
+            </div>
         </div>
     </div>
 
     <script>
+        let currentYear = new Date().getFullYear();
+        let expenseChart, weeklyChart;
+
         async function init() {
-            setYearRange();
-            await loadReports();
+            populateYearSelect();
+            await loadData();
         }
 
-        function setYearRange() {
-            const currentYear = new Date().getFullYear();
-            document.getElementById('from-date').value = `${currentYear}-01-01`;
-            document.getElementById('to-date').value = `${currentYear}-12-31`;
+        function populateYearSelect() {
+            const select = document.getElementById('year-select');
+            for (let year = new Date().getFullYear() + 1; year >= 2020; year--) {
+                const opt = document.createElement('option');
+                opt.value = year;
+                opt.textContent = year;
+                if (year === currentYear) opt.selected = true;
+                select.appendChild(opt);
+            }
         }
 
-        async function loadReports() {
-            const fromDate = document.getElementById('from-date').value;
-            const toDate = document.getElementById('to-date').value;
+        async function loadData() {
+            currentYear = parseInt(document.getElementById('year-select').value);
+            const from = `${currentYear}-01-01`;
+            const to = `${currentYear}-12-31`;
             
             await Promise.all([
-                loadBalanceSheet(toDate),
-                loadIncomeStatement(fromDate, toDate)
+                loadSummary(from, to),
+                loadCategoryBreakdown(from, to),
+                loadWeeklyChart(from, to)
             ]);
         }
 
-        async function loadBalanceSheet(asOfDate) {
-            const res = await fetch(`/api/reports/accrual/balance-sheet?as_of_date=${asOfDate}`);
+        async function loadSummary(from, to) {
+            const res = await fetch(`/api/reports/accrual/income-statement?from=${from}&to=${to}`);
             const data = await res.json();
             
-            // Summary cards
-            const netWorthClass = data.net_worth >= 0 ? 'positive' : 'negative';
-            document.getElementById('balance-sheet-summary').innerHTML = `
-                <div class="summary-card">
-                    <h4>Total Assets</h4>
-                    <div class="value positive">$${data.assets.total.toFixed(2)}</div>
-                </div>
-                <div class="summary-card">
-                    <h4>Total Liabilities</h4>
-                    <div class="value negative">$${data.liabilities.total.toFixed(2)}</div>
-                </div>
-                <div class="summary-card net-worth-card">
-                    <h4>Net Worth</h4>
-                    <div class="value">$${data.net_worth.toFixed(2)}</div>
-                </div>
-                <div class="summary-card">
-                    <h4>CC Payments Made</h4>
-                    <div class="value">$${data.liabilities.credit_card_payments_made.toFixed(2)}</div>
-                </div>
+            document.getElementById('summary-stats').innerHTML = `
+                <div class="account-card"><h4>Total Income</h4><div class="balance positive">$${data.total_income.toFixed(2)}</div></div>
+                <div class="account-card"><h4>Total Expenses</h4><div class="balance negative">$${data.total_expenses.toFixed(2)}</div></div>
+                <div class="account-card"><h4>Net Income</h4><div class="balance ${data.net_income >= 0 ? 'positive' : 'negative'}">$${data.net_income.toFixed(2)}</div></div>
+                <div class="account-card"><h4>Avg Monthly</h4><div class="balance">$${(data.net_income / 12).toFixed(2)}</div></div>
             `;
-            
-            // Assets table
-            let assetsHtml = '<table><thead><tr><th>Account</th><th class="amount">Balance</th></tr></thead><tbody>';
-            data.assets.accounts.forEach(acc => {
-                assetsHtml += `<tr><td>${acc.name}${acc.number ? ' (' + acc.number + ')' : ''}</td><td class="amount income">$${acc.balance.toFixed(2)}</td></tr>`;
-            });
-            assetsHtml += `<tr class="total-row"><td>Total Assets</td><td class="amount income">$${data.assets.total.toFixed(2)}</td></tr>`;
-            assetsHtml += '</tbody></table>';
-            document.getElementById('assets-table').innerHTML = assetsHtml;
-            
-            // Liabilities table
-            let liabilitiesHtml = '<table><thead><tr><th>Account</th><th class="amount">Balance</th></tr></thead><tbody>';
-            if (data.liabilities.accounts.length === 0) {
-                liabilitiesHtml += '<tr><td colspan="2" style="text-align: center; color: #6c757d;">No liabilities</td></tr>';
-            } else {
-                data.liabilities.accounts.forEach(acc => {
-                    liabilitiesHtml += `<tr><td>${acc.name}${acc.number ? ' (' + acc.number + ')' : ''}</td><td class="amount expense">$${acc.balance.toFixed(2)}</td></tr>`;
-                });
-            }
-            liabilitiesHtml += `<tr class="total-row"><td>Total Liabilities</td><td class="amount expense">$${data.liabilities.total.toFixed(2)}</td></tr>`;
-            liabilitiesHtml += '</tbody></table>';
-            document.getElementById('liabilities-table').innerHTML = liabilitiesHtml;
         }
 
-        async function loadIncomeStatement(fromDate, toDate) {
-            const res = await fetch(`/api/reports/accrual/income-statement?from=${fromDate}&to=${toDate}`);
+        async function loadCategoryBreakdown(from, to) {
+            const res = await fetch(`/api/reports/accrual/income-statement?from=${from}&to=${to}`);
             const data = await res.json();
             
-            // Summary cards
-            const netClass = data.net_income >= 0 ? 'positive' : 'negative';
-            document.getElementById('income-statement-summary').innerHTML = `
-                <div class="summary-card">
-                    <h4>Total Income (Accrual)</h4>
-                    <div class="value positive">$${data.total_income.toFixed(2)}</div>
-                </div>
-                <div class="summary-card">
-                    <h4>Total Expenses (Accrual)</h4>
-                    <div class="value negative">$${data.total_expenses.toFixed(2)}</div>
-                </div>
-                <div class="summary-card">
-                    <h4>Net Income</h4>
-                    <div class="value ${netClass}">$${data.net_income.toFixed(2)}</div>
-                </div>
-            `;
+            const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const catData = {};
             
-            // Monthly breakdown table
-            let monthlyHtml = '<table><thead><tr><th>Month</th><th class="amount">Income</th><th class="amount">Expenses</th><th class="amount">Net</th></tr></thead><tbody>';
-            data.monthly_breakdown.forEach(month => {
-                const netClass = month.net_income >= 0 ? 'income' : 'expense';
-                monthlyHtml += `<tr>
-                    <td>${formatMonth(month.month)}</td>
-                    <td class="amount income">$${month.income.toFixed(2)}</td>
-                    <td class="amount expense">$${month.expenses.toFixed(2)}</td>
-                    <td class="amount ${netClass}">$${month.net_income.toFixed(2)}</td>
-                </tr>`;
+            data.monthly_by_category.forEach(row => {
+                const displayName = row.category_name;
+                if (!catData[displayName]) catData[displayName] = { spending: {}, income: {}, type: row.expenses > 0 ? 'expense' : 'income' };
+                const mon = parseInt(row.month.split('-')[1]) - 1;
+                catData[displayName].spending[mon] = (catData[displayName].spending[mon] || 0) + row.expenses;
+                catData[displayName].income[mon] = (catData[displayName].income[mon] || 0) + row.income;
             });
-            monthlyHtml += `<tr class="total-row">
-                <td>Total</td>
-                <td class="amount income">$${data.total_income.toFixed(2)}</td>
-                <td class="amount expense">$${data.total_expenses.toFixed(2)}</td>
-                <td class="amount ${netClass}">$${data.net_income.toFixed(2)}</td>
-            </tr>`;
-            monthlyHtml += '</tbody></table>';
-            document.getElementById('monthly-breakdown').innerHTML = monthlyHtml;
+
+            let html = '<table><thead><tr><th>Category</th>';
+            months.forEach(m => html += `<th class="amount">${m}</th>`);
+            html += '<th class="amount">Total</th></tr></thead><tbody>';
             
-            // Category breakdown
-            let categoryHtml = '<table><thead><tr><th>Category</th><th>Type</th><th class="amount">Income</th><th class="amount">Expenses</th><th class="amount">Net</th></tr></thead><tbody>';
-            
-            // Sort by total (income + expenses) descending
-            const sortedCategories = data.by_category.sort((a, b) => {
-                const totalA = a.income + a.expenses;
-                const totalB = b.income + b.expenses;
+            Object.entries(catData).sort((a,b) => {
+                const totalA = Object.values(a[1].spending).reduce((s,v) => s+v, 0);
+                const totalB = Object.values(b[1].spending).reduce((s,v) => s+v, 0);
                 return totalB - totalA;
+            }).forEach(([displayName, d]) => {
+                let total = 0;
+                html += `<tr><td>${displayName}</td>`;
+                for (let i = 0; i < 12; i++) {
+                    const val = d.type === 'income' ? (d.income[i] || 0) : (d.spending[i] || 0);
+                    total += val;
+                    const cls = d.type === 'income' ? 'income' : 'expense';
+                    html += `<td class="amount ${cls}">${val > 0 ? '$' + val.toFixed(2) : '-'}</td>`;
+                }
+                const cls = d.type === 'income' ? 'income' : 'expense';
+                html += `<td class="amount ${cls}"><strong>$${total.toFixed(2)}</strong></td></tr>`;
+            });
+            html += '</tbody></table>';
+            document.getElementById('category-table').innerHTML = html;
+            
+            // Render expense chart
+            const expenseCategories = data.by_category.filter(c => c.category_type === 'expense');
+            const sorted = expenseCategories.sort((a, b) => b.expenses - a.expenses).slice(0, 10);
+            const labels = sorted.map(c => c.category_name);
+            const values = sorted.map(c => c.expenses);
+            const colors = ['#dc3545', '#fd7e14', '#ffc107', '#28a745', '#20c997', '#17a2b8', '#007bff', '#6610f2', '#6f42c1', '#e83e8c'];
+            
+            if (expenseChart) expenseChart.destroy();
+            
+            const ctx = document.getElementById('expense-chart').getContext('2d');
+            expenseChart = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: values,
+                        backgroundColor: colors
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'right' },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.label + ': $' + context.parsed.toFixed(2);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        async function loadWeeklyChart(from, to) {
+            const res = await fetch(`/api/transactions?from=${from}&to=${to}&approved=true`);
+            const txns = await res.json();
+            
+            // Group by week
+            const weeklyData = {};
+            txns.forEach(t => {
+                if (t.is_credit_card_payment) return;
+                
+                const date = new Date(t.date);
+                const weekStart = new Date(date);
+                weekStart.setDate(date.getDate() - date.getDay());
+                const weekKey = weekStart.toISOString().split('T')[0];
+                
+                if (!weeklyData[weekKey]) {
+                    weeklyData[weekKey] = { income: 0, expenses: 0 };
+                }
+                
+                if (t.amount > 0) {
+                    weeklyData[weekKey].income += t.amount;
+                } else {
+                    weeklyData[weekKey].expenses += Math.abs(t.amount);
+                }
             });
             
-            sortedCategories.forEach(cat => {
-                const netClass = cat.net >= 0 ? 'income' : 'expense';
-                const typeBadge = cat.category_type === 'income' ? 
-                    '<span class="badge badge-asset">Income</span>' : 
-                    '<span class="badge badge-liability">Expense</span>';
-                categoryHtml += `<tr>
-                    <td>${cat.category_name}${typeBadge}</td>
-                    <td>${cat.category_type || '-'}</td>
-                    <td class="amount income">${cat.income > 0 ? '$' + cat.income.toFixed(2) : '-'}</td>
-                    <td class="amount expense">${cat.expenses > 0 ? '$' + cat.expenses.toFixed(2) : '-'}</td>
-                    <td class="amount ${netClass}">$${cat.net.toFixed(2)}</td>
-                </tr>`;
+            const sortedWeeks = Object.keys(weeklyData).sort();
+            const labels = sortedWeeks.map(w => {
+                const d = new Date(w);
+                return (d.getMonth() + 1) + '/' + d.getDate();
             });
-            categoryHtml += '</tbody></table>';
-            document.getElementById('category-breakdown').innerHTML = categoryHtml;
+            const incomeData = sortedWeeks.map(w => weeklyData[w].income);
+            const expenseData = sortedWeeks.map(w => weeklyData[w].expenses);
+            
+            if (weeklyChart) weeklyChart.destroy();
+            
+            const ctx = document.getElementById('weekly-chart').getContext('2d');
+            weeklyChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Income',
+                            data: incomeData,
+                            borderColor: '#28a745',
+                            backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                            tension: 0.3,
+                            fill: true
+                        },
+                        {
+                            label: 'Expenses',
+                            data: expenseData,
+                            borderColor: '#dc3545',
+                            backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                            tension: 0.3,
+                            fill: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return '$' + value.toFixed(0);
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': $' + context.parsed.y.toFixed(2);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
         }
 
         function formatMonth(monthStr) {
