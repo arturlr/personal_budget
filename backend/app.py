@@ -27,6 +27,10 @@ def cashflow():
 def accrual_view():
     return render_template('accrual.html')
 
+@app.route('/dashboard')
+def dashboard():
+    return render_template('dashboard.html')
+
 @app.route('/api')
 def api_index():
     return {'status': 'ok', 'message': 'Personal Finance API'}

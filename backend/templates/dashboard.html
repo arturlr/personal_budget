@@ -80,7 +80,7 @@
         </div>
 
         <div class="chart-container">
-            <h2>Income vs Expenses (Monthly)</h2>
+            <h2>Budget Report</h2>
             <div class="chart-wrapper">
                 <canvas id="monthly-chart"></canvas>
             </div>
@@ -96,10 +96,24 @@
                 <canvas id="pie-chart"></canvas>
             </div>
         </div>
+
+        <div class="chart-container">
+            <h2>Cash Flow</h2>
+            <div class="chart-wrapper">
+                <canvas id="cashflow-chart"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h2>Accrual</h2>
+            <div class="chart-wrapper">
+                <canvas id="accrual-chart"></canvas>
+            </div>
+        </div>
     </div>
 
     <script>
-        let categoryChart, monthlyChart, pieChart;
+        let categoryChart, monthlyChart, pieChart, cashflowChart, accrualChart;
         let currentYear = new Date().getFullYear();
         let allCategories = [];
         let allTransactions = [];
@@ -109,6 +123,8 @@
             populateYearSelect();
             populateMonthSelect();
             await loadDashboard();
+            await loadCashFlowChart();
+            await loadAccrualChart();
         }
 
         function populateYearSelect() {
@@ -227,9 +243,10 @@
             
             const monthlyData = {};
             for (let i = 1; i <= 12; i++) {
-                monthlyData[i] = { income: 0, expenses: 0 };
+                monthlyData[i] = { income: 0, expenses: 0, balance: 0 };
             }
             
+            let runningBalance = 0;
             transactions.forEach(t => {
                 const month = new Date(t.date).getMonth() + 1;
                 if (t.amount > 0) {
@@ -239,9 +256,17 @@
                 }
             });
             
+            // Calculate running balance and cash/accrual
+            for (let i = 1; i <= 12; i++) {
+                runningBalance += monthlyData[i].income - monthlyData[i].expenses;
+                monthlyData[i].balance = runningBalance;
+            }
+            
             const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             const incomeData = Object.values(monthlyData).map(d => d.income);
-            const expenseData = Object.values(monthlyData).map(d => d.expenses);
+            const balanceData = Object.values(monthlyData).map(d => d.balance);
+            const cashData = Object.values(monthlyData).map(d => d.income - d.expenses);
+            const accrualData = Object.values(monthlyData).map(d => d.balance);
             
             if (monthlyChart) monthlyChart.destroy();
             
@@ -254,22 +279,48 @@
                         {
                             label: 'Income',
                             data: incomeData,
-                            backgroundColor: 'rgba(40, 167, 69, 0.7)',
-                            borderColor: 'rgba(40, 167, 69, 1)',
-                            borderWidth: 1
+                            backgroundColor: 'rgba(54, 162, 235, 0.8)',
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            borderWidth: 1,
+                            stack: 'stack0'
                         },
                         {
-                            label: 'Expenses',
-                            data: expenseData,
-                            backgroundColor: 'rgba(220, 53, 69, 0.7)',
+                            label: 'Balance',
+                            data: balanceData,
+                            backgroundColor: 'rgba(201, 203, 207, 0.6)',
+                            borderColor: 'rgba(201, 203, 207, 1)',
+                            borderWidth: 1,
+                            stack: 'stack0'
+                        },
+                        {
+                            label: 'Cash',
+                            data: cashData,
+                            type: 'line',
                             borderColor: 'rgba(220, 53, 69, 1)',
-                            borderWidth: 1
+                            backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                            borderWidth: 3,
+                            fill: false,
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Accrual',
+                            data: accrualData,
+                            type: 'line',
+                            borderColor: 'rgba(255, 159, 64, 1)',
+                            backgroundColor: 'rgba(255, 159, 64, 0.1)',
+                            borderWidth: 3,
+                            fill: false,
+                            tension: 0.4
                         }
                     ]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
                     scales: {
                         y: {
                             beginAtZero: true,
@@ -278,6 +329,12 @@
                                     return '$' + value.toFixed(0);
                                 }
                             }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top'
                         }
                     }
                 }
@@ -609,6 +666,133 @@
                     }
                 }
             });
+        }
+
+        async function loadCashFlowChart() {
+            try {
+                const from = `${currentYear}-01-01`;
+                const to = `${currentYear}-12-31`;
+                const res = await fetch(`/api/reports/cashflow/by-category?from=${from}&to=${to}&type=expense`);
+                if (!res.ok) throw new Error('Failed to load cashflow data');
+                const data = await res.json();
+                
+                const catTotals = {};
+                data.forEach(row => {
+                    const cat = row.category || 'Uncategorized';
+                    const displayName = row.subcategory ? `${cat}: ${row.subcategory}` : cat;
+                    catTotals[displayName] = (catTotals[displayName] || 0) + row.spending;
+                });
+                
+                const sorted = Object.entries(catTotals).sort((a, b) => b[1] - a[1]).slice(0, 10);
+                const labels = sorted.map(([cat]) => cat);
+                const values = sorted.map(([, val]) => val);
+                const colors = ['#dc3545', '#fd7e14', '#ffc107', '#28a745', '#20c997', '#17a2b8', '#007bff', '#6610f2', '#6f42c1', '#e83e8c'];
+                
+                if (cashflowChart) cashflowChart.destroy();
+                
+                const ctx = document.getElementById('cashflow-chart').getContext('2d');
+                cashflowChart = new Chart(ctx, {
+                    type: 'pie',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: values,
+                            backgroundColor: colors
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'right' }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Cash flow chart error:', error);
+            }
+        }
+
+        async function loadAccrualChart() {
+            try {
+                const from = `${currentYear}-01-01`;
+                const to = `${currentYear}-12-31`;
+                const res = await fetch(`/api/transactions?from=${from}&to=${to}&approved=true`);
+                if (!res.ok) throw new Error('Failed to load accrual data');
+                const txns = await res.json();
+                
+                const weeklyData = {};
+                txns.forEach(t => {
+                    if (t.is_credit_card_payment) return;
+                    
+                    const date = new Date(t.date);
+                    const weekStart = new Date(date);
+                    weekStart.setDate(date.getDate() - date.getDay());
+                    const weekKey = weekStart.toISOString().split('T')[0];
+                    
+                    if (!weeklyData[weekKey]) {
+                        weeklyData[weekKey] = { income: 0, expenses: 0 };
+                    }
+                    
+                    if (t.amount > 0) {
+                        weeklyData[weekKey].income += t.amount;
+                    } else {
+                        weeklyData[weekKey].expenses += Math.abs(t.amount);
+                    }
+                });
+                
+                const sortedWeeks = Object.keys(weeklyData).sort();
+                const labels = sortedWeeks.map(w => {
+                    const d = new Date(w);
+                    return (d.getMonth() + 1) + '/' + d.getDate();
+                });
+                const incomeData = sortedWeeks.map(w => weeklyData[w].income);
+                const expenseData = sortedWeeks.map(w => weeklyData[w].expenses);
+                
+                if (accrualChart) accrualChart.destroy();
+                
+                const ctx = document.getElementById('accrual-chart').getContext('2d');
+                accrualChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Income',
+                                data: incomeData,
+                                borderColor: '#28a745',
+                                backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                                tension: 0.3,
+                                fill: true
+                            },
+                            {
+                                label: 'Expenses',
+                                data: expenseData,
+                                borderColor: '#dc3545',
+                                backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                                tension: 0.3,
+                                fill: true
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        return '$' + value.toFixed(0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Accrual chart error:', error);
+            }
         }
 
         init();

@@ -51,6 +51,7 @@
         <a href="/">Personal Budget</a>
         <a href="/">Transactions</a>
         <a href="/config">Configuration</a>
+        <a href="/dashboard">Dashboard</a>
         <a href="/cashflow">Cash Flow</a>
         <a href="/accrual" class="active">Accrual</a>
     </div>
@@ -68,32 +69,15 @@
             <div id="summary-stats" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px;"></div>
         </div>
 
-        <!-- Weekly Trend Chart -->
-        <div class="section">
-            <h2>Weekly Spending Trend</h2>
-            <div style="position: relative; height: 400px;">
-                <canvas id="weekly-chart"></canvas>
-            </div>
-        </div>
-
         <!-- Monthly Category Breakdown -->
         <div class="section">
             <h2>Monthly Category Breakdown</h2>
             <div id="category-table"></div>
         </div>
-
-        <!-- Expense Breakdown Chart -->
-        <div class="section">
-            <h2>Expense Breakdown</h2>
-            <div style="position: relative; height: 400px;">
-                <canvas id="expense-chart"></canvas>
-            </div>
-        </div>
     </div>
 
     <script>
         let currentYear = new Date().getFullYear();
-        let expenseChart, weeklyChart;
 
         async function init() {
             populateYearSelect();
@@ -118,8 +102,7 @@
             
             await Promise.all([
                 loadSummary(from, to),
-                loadCategoryBreakdown(from, to),
-                loadWeeklyChart(from, to)
+                loadCategoryBreakdown(from, to)
             ]);
         }
 
@@ -170,128 +153,37 @@
                 const cls = d.type === 'income' ? 'income' : 'expense';
                 html += `<td class="amount ${cls}"><strong>$${total.toFixed(2)}</strong></td></tr>`;
             });
+            
+            // Add totals row
+            const monthlyTotals = { income: Array(12).fill(0), expense: Array(12).fill(0) };
+            Object.values(catData).forEach(d => {
+                for (let i = 0; i < 12; i++) {
+                    if (d.type === 'income') {
+                        monthlyTotals.income[i] += d.income[i] || 0;
+                    } else {
+                        monthlyTotals.expense[i] += d.spending[i] || 0;
+                    }
+                }
+            });
+            
+            html += '<tr style="border-top: 2px solid #333;"><td><strong>Total Income</strong></td>';
+            let totalIncome = 0;
+            for (let i = 0; i < 12; i++) {
+                totalIncome += monthlyTotals.income[i];
+                html += `<td class="amount income"><strong>${monthlyTotals.income[i] > 0 ? '$' + monthlyTotals.income[i].toFixed(2) : '-'}</strong></td>`;
+            }
+            html += `<td class="amount income"><strong>$${totalIncome.toFixed(2)}</strong></td></tr>`;
+            
+            html += '<tr><td><strong>Total Expenses</strong></td>';
+            let totalExpense = 0;
+            for (let i = 0; i < 12; i++) {
+                totalExpense += monthlyTotals.expense[i];
+                html += `<td class="amount expense"><strong>${monthlyTotals.expense[i] > 0 ? '$' + monthlyTotals.expense[i].toFixed(2) : '-'}</strong></td>`;
+            }
+            html += `<td class="amount expense"><strong>$${totalExpense.toFixed(2)}</strong></td></tr>`;
+            
             html += '</tbody></table>';
             document.getElementById('category-table').innerHTML = html;
-            
-            // Render expense chart
-            const expenseCategories = data.by_category.filter(c => c.category_type === 'expense');
-            const sorted = expenseCategories.sort((a, b) => b.expenses - a.expenses).slice(0, 10);
-            const labels = sorted.map(c => c.category_name);
-            const values = sorted.map(c => c.expenses);
-            const colors = ['#dc3545', '#fd7e14', '#ffc107', '#28a745', '#20c997', '#17a2b8', '#007bff', '#6610f2', '#6f42c1', '#e83e8c'];
-            
-            if (expenseChart) expenseChart.destroy();
-            
-            const ctx = document.getElementById('expense-chart').getContext('2d');
-            expenseChart = new Chart(ctx, {
-                type: 'pie',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        data: values,
-                        backgroundColor: colors
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'right' },
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    return context.label + ': $' + context.parsed.toFixed(2);
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        async function loadWeeklyChart(from, to) {
-            const res = await fetch(`/api/transactions?from=${from}&to=${to}&approved=true`);
-            const txns = await res.json();
-            
-            // Group by week
-            const weeklyData = {};
-            txns.forEach(t => {
-                if (t.is_credit_card_payment) return;
-                
-                const date = new Date(t.date);
-                const weekStart = new Date(date);
-                weekStart.setDate(date.getDate() - date.getDay());
-                const weekKey = weekStart.toISOString().split('T')[0];
-                
-                if (!weeklyData[weekKey]) {
-                    weeklyData[weekKey] = { income: 0, expenses: 0 };
-                }
-                
-                if (t.amount > 0) {
-                    weeklyData[weekKey].income += t.amount;
-                } else {
-                    weeklyData[weekKey].expenses += Math.abs(t.amount);
-                }
-            });
-            
-            const sortedWeeks = Object.keys(weeklyData).sort();
-            const labels = sortedWeeks.map(w => {
-                const d = new Date(w);
-                return (d.getMonth() + 1) + '/' + d.getDate();
-            });
-            const incomeData = sortedWeeks.map(w => weeklyData[w].income);
-            const expenseData = sortedWeeks.map(w => weeklyData[w].expenses);
-            
-            if (weeklyChart) weeklyChart.destroy();
-            
-            const ctx = document.getElementById('weekly-chart').getContext('2d');
-            weeklyChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: 'Income',
-                            data: incomeData,
-                            borderColor: '#28a745',
-                            backgroundColor: 'rgba(40, 167, 69, 0.1)',
-                            tension: 0.3,
-                            fill: true
-                        },
-                        {
-                            label: 'Expenses',
-                            data: expenseData,
-                            borderColor: '#dc3545',
-                            backgroundColor: 'rgba(220, 53, 69, 0.1)',
-                            tension: 0.3,
-                            fill: true
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            ticks: {
-                                callback: function(value) {
-                                    return '$' + value.toFixed(0);
-                                }
-                            }
-                        }
-                    },
-                    plugins: {
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    return context.dataset.label + ': $' + context.parsed.y.toFixed(2);
-                                }
-                            }
-                        }
-                    }
-                }
-            });
         }
 
         function formatMonth(monthStr) {

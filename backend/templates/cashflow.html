@@ -46,6 +46,7 @@
         <a href="/">Personal Budget</a>
         <a href="/">Transactions</a>
         <a href="/config">Configuration</a>
+        <a href="/dashboard">Dashboard</a>
         <a href="/cashflow" class="active">Cash Flow</a>
         <a href="/accrual">Accrual</a>
     </div>
@@ -72,14 +73,6 @@
             <div id="category-table"></div>
         </div>
 
-        <!-- Expense Breakdown Chart -->
-        <div class="section">
-            <h2>Expense Breakdown</h2>
-            <div style="position: relative; height: 400px;">
-                <canvas id="expense-chart"></canvas>
-            </div>
-        </div>
-
         <!-- Credit Card Payments -->
         <div class="section">
             <h2>Credit Card Payments</h2>
@@ -100,7 +93,6 @@
     <script>
         let currentYear = new Date().getFullYear();
         let categories = [];
-        let expenseChart;
 
         async function init() {
             populateYearSelect();
@@ -128,8 +120,7 @@
                 loadAccountBalances(),
                 loadSummary(from, to),
                 loadCategoryBreakdown(from, to),
-                loadCCPayments(from, to),
-                loadExpenseChart(from, to)
+                loadCCPayments(from, to)
             ]);
         }
 
@@ -210,6 +201,35 @@
                 const cls = d.type === 'income' ? 'income' : 'expense';
                 html += `<td class="amount ${cls}"><strong>$${total.toFixed(2)}</strong></td></tr>`;
             });
+            
+            // Add totals row
+            const monthlyTotals = { income: Array(12).fill(0), expense: Array(12).fill(0) };
+            Object.values(catData).forEach(d => {
+                for (let i = 0; i < 12; i++) {
+                    if (d.type === 'income') {
+                        monthlyTotals.income[i] += d.income[i] || 0;
+                    } else {
+                        monthlyTotals.expense[i] += d.spending[i] || 0;
+                    }
+                }
+            });
+            
+            html += '<tr style="border-top: 2px solid #333;"><td><strong>Total Income</strong></td>';
+            let totalIncome = 0;
+            for (let i = 0; i < 12; i++) {
+                totalIncome += monthlyTotals.income[i];
+                html += `<td class="amount income"><strong>${monthlyTotals.income[i] > 0 ? '$' + monthlyTotals.income[i].toFixed(2) : '-'}</strong></td>`;
+            }
+            html += `<td class="amount income"><strong>$${totalIncome.toFixed(2)}</strong></td></tr>`;
+            
+            html += '<tr><td><strong>Total Expenses</strong></td>';
+            let totalExpense = 0;
+            for (let i = 0; i < 12; i++) {
+                totalExpense += monthlyTotals.expense[i];
+                html += `<td class="amount expense"><strong>${monthlyTotals.expense[i] > 0 ? '$' + monthlyTotals.expense[i].toFixed(2) : '-'}</strong></td>`;
+            }
+            html += `<td class="amount expense"><strong>$${totalExpense.toFixed(2)}</strong></td></tr>`;
+            
             html += '</tbody></table>';
             document.getElementById('category-table').innerHTML = html;
         }
@@ -261,51 +281,6 @@
 
         function closeModal() {
             document.getElementById('txn-modal').style.display = 'none';
-        }
-
-        async function loadExpenseChart(from, to) {
-            const res = await fetch(`/api/reports/cashflow/by-category?from=${from}&to=${to}&type=expense`);
-            const data = await res.json();
-            
-            const catTotals = {};
-            data.forEach(row => {
-                const cat = row.category || 'Uncategorized';
-                const displayName = row.subcategory ? `${cat}: ${row.subcategory}` : cat;
-                catTotals[displayName] = (catTotals[displayName] || 0) + row.spending;
-            });
-            
-            const sorted = Object.entries(catTotals).sort((a, b) => b[1] - a[1]).slice(0, 10);
-            const labels = sorted.map(([cat]) => cat);
-            const values = sorted.map(([, val]) => val);
-            const colors = ['#dc3545', '#fd7e14', '#ffc107', '#28a745', '#20c997', '#17a2b8', '#007bff', '#6610f2', '#6f42c1', '#e83e8c'];
-            
-            if (expenseChart) expenseChart.destroy();
-            
-            const ctx = document.getElementById('expense-chart').getContext('2d');
-            expenseChart = new Chart(ctx, {
-                type: 'pie',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        data: values,
-                        backgroundColor: colors
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'right' },
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    return context.label + ': $' + context.parsed.toFixed(2);
-                                }
-                            }
-                        }
-                    }
-                }
-            });
         }
 
         window.onclick = function(e) {
