@@ -3,75 +3,13 @@ from flask_migrate import Migrate
 from models import db, Account, Category, Transaction, CategoryRule, ForecastItem
 from services import importer, categorizer, accrual
 from datetime import datetime, date
-from sqlalchemy.exc import IntegrityError
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///budget.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB file upload limit
 
 db.init_app(app)
 migrate = Migrate(app, db)
-
-# Validation constants
-VALID_CATEGORY_TYPES = ['income', 'expense', 'transfer']
-VALID_FREQUENCIES = ['monthly', 'annual', 'quarterly']
-VALID_FORECAST_TYPES = ['fixed', 'variable']
-
-def validate_category(data):
-    if not data.get('name', '').strip():
-        return 'name is required and cannot be empty'
-    if not data.get('type') or data['type'] not in VALID_CATEGORY_TYPES:
-        return f'type must be one of: {", ".join(VALID_CATEGORY_TYPES)}'
-    return None
-
-def validate_rule(data):
-    if not data.get('pattern', '').strip():
-        return 'pattern is required and cannot be empty'
-    if not data.get('category_id'):
-        return 'category_id is required'
-    return None
-
-def validate_account(data):
-    if not data.get('name', '').strip():
-        return 'name is required and cannot be empty'
-    return None
-
-def validate_forecast(data):
-    if not data.get('name', '').strip():
-        return 'name is required'
-    if not data.get('category_id'):
-        return 'category_id is required'
-    if not data.get('amount'):
-        return 'amount is required'
-    if data.get('frequency') not in VALID_FREQUENCIES:
-        return f'frequency must be one of: {", ".join(VALID_FREQUENCIES)}'
-    if data.get('type') not in VALID_FORECAST_TYPES:
-        return f'type must be one of: {", ".join(VALID_FORECAST_TYPES)}'
-    if not data.get('start_date'):
-        return 'start_date is required'
-    return None
-
-def to_str(value):
-    """Convert Decimal/numeric to string for JSON"""
-    return str(value) if value is not None else None
-
-def paginate_query(query, page=1, per_page=100, max_per_page=1000):
-    """Apply pagination to a query"""
-    per_page = min(per_page, max_per_page)
-    page = max(1, page)
-    
-    total = query.count()
-    items = query.limit(per_page).offset((page - 1) * per_page).all()
-    
-    return {
-        'items': items,
-        'page': page,
-        'per_page': per_page,
-        'total': total,
-        'pages': (total + per_page - 1) // per_page
-    }
-
 
 @app.route('/')
 def index():
@@ -109,55 +47,34 @@ def import_file():
     if not account_id:
         return jsonify({'error': 'account_id required'}), 400
     
-    # Verify account exists
-    if not Account.query.get(account_id):
-        return jsonify({'error': 'Invalid account_id'}), 400
+    content = file.read().decode('utf-8')
     
-    try:
-        content = file.read().decode('utf-8')
-    except UnicodeDecodeError:
-        return jsonify({'error': 'Invalid file encoding. Please use UTF-8'}), 400
-    except Exception as e:
-        return jsonify({'error': f'File read error: {str(e)}'}), 400
-    
-    try:
-        # Detect format and parse
-        if file.filename.endswith('.ofx'):
-            transactions = importer.parse_ofx(content)
-            format_detected = 'ofx'
+    # Detect format and parse
+    if file.filename.endswith('.ofx'):
+        transactions = importer.parse_ofx(content)
+        format_detected = 'ofx'
+    else:
+        csv_format = importer.detect_csv_format(content)
+        if csv_format == '4col':
+            transactions = importer.parse_csv_4col(content)
+            format_detected = 'csv_4col'
         else:
-            csv_format = importer.detect_csv_format(content)
-            if csv_format == '4col':
-                transactions = importer.parse_csv_4col(content)
-                format_detected = 'csv_4col'
-            else:
-                transactions = importer.parse_csv_3col(content)
-                format_detected = 'csv_3col'
-    except Exception as e:
-        return jsonify({'error': f'Parse error: {str(e)}'}), 400
+            transactions = importer.parse_csv_3col(content)
+            format_detected = 'csv_3col'
     
-    try:
-        # Import transactions
-        result = importer.import_transactions(transactions, account_id)
-        
-        # Apply categorization suggestions
-        new_txns = Transaction.query.filter_by(account_id=account_id, is_approved=False).all()
-        categorizer.apply_suggestions(new_txns)
-        
-        return jsonify({**result, 'format_detected': format_detected})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': f'Import error: {str(e)}'}), 500
+    # Import transactions
+    result = importer.import_transactions(transactions, account_id)
+    
+    # Apply categorization suggestions
+    new_txns = Transaction.query.filter_by(account_id=account_id, is_approved=False).all()
+    categorizer.apply_suggestions(new_txns)
+    
+    return jsonify({**result, 'format_detected': format_detected})
 
 # Transaction endpoints
 @app.route('/api/transactions', methods=['GET'])
 def get_transactions():
-    query = Transaction.query.options(
-        db.joinedload(Transaction.category),
-        db.joinedload(Transaction.subcategory),
-        db.joinedload(Transaction.suggested_category),
-        db.joinedload(Transaction.suggested_subcategory)
-    )
+    query = Transaction.query
     
     if from_date := request.args.get('from'):
         query = query.filter(Transaction.date >= datetime.fromisoformat(from_date).date())
@@ -172,35 +89,20 @@ def get_transactions():
     if request.args.get('exclude_cc_payments', 'false').lower() == 'true':
         query = query.filter_by(is_credit_card_payment=False)
     
-    query = query.order_by(Transaction.date.desc())
-    
-    # Pagination
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 100, type=int)
-    result = paginate_query(query, page, per_page)
-    
-    return jsonify({
-        'transactions': [{
-            'id': t.id,
-            'account_id': t.account_id,
-            'date': t.date.isoformat(),
-            'memo': t.memo,
-            'amount': to_str(t.amount),
-            'category_id': t.category_id,
-            'subcategory_id': t.subcategory_id,
-            'suggested_category_id': t.suggested_category_id,
-            'suggested_subcategory_id': t.suggested_subcategory_id,
-            'is_approved': t.is_approved,
-            'is_credit_card_payment': t.is_credit_card_payment
-        } for t in result['items']],
-        'pagination': {
-            'page': result['page'],
-            'per_page': result['per_page'],
-            'total': result['total'],
-            'pages': result['pages']
-        }
-    })
-
+    transactions = query.order_by(Transaction.date.desc()).all()
+    return jsonify([{
+        'id': t.id,
+        'account_id': t.account_id,
+        'date': t.date.isoformat(),
+        'memo': t.memo,
+        'amount': float(t.amount),
+        'category_id': t.category_id,
+        'subcategory_id': t.subcategory_id,
+        'suggested_category_id': t.suggested_category_id,
+        'suggested_subcategory_id': t.suggested_subcategory_id,
+        'is_approved': t.is_approved,
+        'is_credit_card_payment': t.is_credit_card_payment
+    } for t in transactions])
 
 @app.route('/api/transactions/<int:id>', methods=['PATCH'])
 def update_transaction(id):
@@ -243,25 +145,15 @@ def get_categories():
 @app.route('/api/categories', methods=['POST'])
 def create_category():
     data = request.json
-    if error := validate_category(data):
-        return jsonify({'error': error}), 400
-    
-    try:
-        category = Category(
-            name=data['name'].strip(),
-            type=data['type'],
-            parent_id=data.get('parent_id'),
-            color=data.get('color')
-        )
-        db.session.add(category)
-        db.session.commit()
-        return jsonify({'id': category.id, 'status': 'created'}), 201
-    except IntegrityError:
-        db.session.rollback()
-        return jsonify({'error': 'Category with this name already exists'}), 400
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+    category = Category(
+        name=data['name'],
+        type=data['type'],
+        parent_id=data.get('parent_id'),
+        color=data.get('color')
+    )
+    db.session.add(category)
+    db.session.commit()
+    return jsonify({'id': category.id, 'status': 'created'}), 201
 
 @app.route('/api/categories/<int:id>', methods=['PATCH'])
 def update_category(id):
@@ -301,48 +193,27 @@ def delete_category(id):
 # Category Rules endpoints
 @app.route('/api/category-rules', methods=['GET'])
 def get_rules():
-    query = CategoryRule.query.order_by(CategoryRule.priority.desc())
-    
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 100, type=int)
-    result = paginate_query(query, page, per_page)
-    
-    return jsonify({
-        'rules': [{
-            'id': r.id,
-            'pattern': r.pattern,
-            'category_id': r.category_id,
-            'subcategory_id': r.subcategory_id,
-            'priority': r.priority
-        } for r in result['items']],
-        'pagination': {
-            'page': result['page'],
-            'per_page': result['per_page'],
-            'total': result['total'],
-            'pages': result['pages']
-        }
-    })
-
+    rules = CategoryRule.query.order_by(CategoryRule.priority.desc()).all()
+    return jsonify([{
+        'id': r.id,
+        'pattern': r.pattern,
+        'category_id': r.category_id,
+        'subcategory_id': r.subcategory_id,
+        'priority': r.priority
+    } for r in rules])
 
 @app.route('/api/category-rules', methods=['POST'])
 def create_rule():
     data = request.json
-    if error := validate_rule(data):
-        return jsonify({'error': error}), 400
-    
-    try:
-        rule = CategoryRule(
-            pattern=data['pattern'].strip(),
-            category_id=data['category_id'],
-            subcategory_id=data.get('subcategory_id'),
-            priority=data.get('priority', 0)
-        )
-        db.session.add(rule)
-        db.session.commit()
-        return jsonify({'id': rule.id, 'status': 'created'}), 201
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+    rule = CategoryRule(
+        pattern=data['pattern'],
+        category_id=data['category_id'],
+        subcategory_id=data.get('subcategory_id'),
+        priority=data.get('priority', 0)
+    )
+    db.session.add(rule)
+    db.session.commit()
+    return jsonify({'id': rule.id, 'status': 'created'}), 201
 
 @app.route('/api/category-rules/<int:id>', methods=['PATCH'])
 def update_rule(id):
@@ -377,29 +248,22 @@ def get_accounts():
         'name': a.name,
         'number': a.number,
         'ofx_account_id': a.ofx_account_id,
-        'starting_balance': to_str(a.starting_balance) if a.starting_balance else '0',
+        'starting_balance': float(a.starting_balance) if a.starting_balance else 0,
         'starting_balance_date': a.starting_balance_date.isoformat() if a.starting_balance_date else None
     } for a in accounts])
 
 @app.route('/api/accounts', methods=['POST'])
 def create_account():
     data = request.json
-    if error := validate_account(data):
-        return jsonify({'error': error}), 400
-    
-    try:
-        account = Account(
-            name=data['name'].strip(),
-            number=data.get('number'),
-            starting_balance=data.get('starting_balance', 0),
-            starting_balance_date=datetime.fromisoformat(data['starting_balance_date']).date() if data.get('starting_balance_date') else None
-        )
-        db.session.add(account)
-        db.session.commit()
-        return jsonify({'id': account.id, 'status': 'created'}), 201
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+    account = Account(
+        name=data['name'],
+        number=data.get('number'),
+        starting_balance=data.get('starting_balance', 0),
+        starting_balance_date=datetime.fromisoformat(data['starting_balance_date']).date() if data.get('starting_balance_date') else None
+    )
+    db.session.add(account)
+    db.session.commit()
+    return jsonify({'id': account.id, 'status': 'created'}), 201
 
 @app.route('/api/accounts/<int:id>', methods=['PATCH'])
 def update_account(id):
@@ -428,56 +292,35 @@ def delete_account(id):
 # Forecast endpoints
 @app.route('/api/forecast', methods=['GET'])
 def get_forecast():
-    query = ForecastItem.query
-    
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 100, type=int)
-    result = paginate_query(query, page, per_page)
-    
-    return jsonify({
-        'items': [{
-            'id': f.id,
-            'name': f.name,
-            'category_id': f.category_id,
-            'subcategory_id': f.subcategory_id,
-            'amount': to_str(f.amount),
-            'frequency': f.frequency,
-            'type': f.type,
-            'start_date': f.start_date.isoformat(),
-            'end_date': f.end_date.isoformat() if f.end_date else None
-        } for f in result['items']],
-        'pagination': {
-            'page': result['page'],
-            'per_page': result['per_page'],
-            'total': result['total'],
-            'pages': result['pages']
-        }
-    })
-
+    items = ForecastItem.query.all()
+    return jsonify([{
+        'id': f.id,
+        'name': f.name,
+        'category_id': f.category_id,
+        'subcategory_id': f.subcategory_id,
+        'amount': float(f.amount),
+        'frequency': f.frequency,
+        'type': f.type,
+        'start_date': f.start_date.isoformat(),
+        'end_date': f.end_date.isoformat() if f.end_date else None
+    } for f in items])
 
 @app.route('/api/forecast', methods=['POST'])
 def create_forecast():
     data = request.json
-    if error := validate_forecast(data):
-        return jsonify({'error': error}), 400
-    
-    try:
-        item = ForecastItem(
-            name=data['name'].strip(),
-            category_id=data['category_id'],
-            subcategory_id=data.get('subcategory_id'),
-            amount=data['amount'],
-            frequency=data['frequency'],
-            type=data['type'],
-            start_date=datetime.fromisoformat(data['start_date']).date(),
-            end_date=datetime.fromisoformat(data['end_date']).date() if data.get('end_date') else None
-        )
-        db.session.add(item)
-        db.session.commit()
-        return jsonify({'id': item.id, 'status': 'created'}), 201
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+    item = ForecastItem(
+        name=data['name'],
+        category_id=data['category_id'],
+        subcategory_id=data.get('subcategory_id'),
+        amount=data['amount'],
+        frequency=data['frequency'],
+        type=data['type'],
+        start_date=datetime.fromisoformat(data['start_date']).date(),
+        end_date=datetime.fromisoformat(data['end_date']).date() if data.get('end_date') else None
+    )
+    db.session.add(item)
+    db.session.commit()
+    return jsonify({'id': item.id, 'status': 'created'}), 201
 
 @app.route('/api/forecast/<int:id>', methods=['PATCH'])
 def update_forecast(id):

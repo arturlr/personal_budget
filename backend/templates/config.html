@@ -71,9 +71,38 @@
         <!-- Categories Section -->
         <div id="categories" class="section active">
             <h2>Categories</h2>
-            <button class="btn" style="background: #6c757d; color: white;" onclick="openBulkImportModal()">📋 Bulk Import Categories</button>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                <button class="btn btn-primary" onclick="toggleCategoryView()">🔄 Switch View</button>
+                <button class="btn btn-success" onclick="openCategoryDialog()">+ Add Category</button>
+            </div>
             
-            <div id="categories-tree" style="margin-top: 20px;"></div>
+            <!-- Text View -->
+            <div id="text-view">
+                <p style="color: #6c757d; font-size: 14px; margin-bottom: 10px;">
+                    Format: <code>Category | Subcategory (optional) | #color (optional)</code>
+                </p>
+                
+                <h3 style="margin-top: 20px; margin-bottom: 10px;">Income Categories</h3>
+                <textarea id="income-text" rows="10" style="width: 100%; padding: 10px; font-family: monospace; font-size: 13px; margin-bottom: 10px;" placeholder="Income
+Income | Salary
+Income | Bonus"></textarea>
+                
+                <h3 style="margin-top: 20px; margin-bottom: 10px;">Expense Categories</h3>
+                <textarea id="expense-text" rows="15" style="width: 100%; padding: 10px; font-family: monospace; font-size: 13px; margin-bottom: 10px;" placeholder="Groceries
+Home
+Home | Rent
+Home | Utilities"></textarea>
+                
+                <div style="display: flex; gap: 10px;">
+                    <button class="btn btn-success" onclick="saveAllCategories()">💾 Save All</button>
+                    <button class="btn btn-secondary" onclick="loadCategories()">🔄 Reload</button>
+                </div>
+            </div>
+            
+            <!-- List View -->
+            <div id="list-view" style="display: none;">
+                <div id="categories-list"></div>
+            </div>
         </div>
 
         <!-- Rules Section -->
@@ -86,7 +115,11 @@
                 </div>
                 <div class="form-group">
                     <label>Category</label>
-                    <select id="rule-category"></select>
+                    <select id="rule-category" onchange="updateRuleSubcategories()"></select>
+                </div>
+                <div class="form-group" id="rule-subcategory-group" style="display: none;">
+                    <label>Subcategory</label>
+                    <select id="rule-subcategory"></select>
                 </div>
                 <div class="form-group">
                     <label>Priority</label>
@@ -166,13 +199,13 @@
 
     <!-- Category Modal -->
     <div id="category-modal" class="modal">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width: 600px;">
             <div class="modal-header">
-                <h3 id="category-modal-title">Add Category</h3>
-                <span class="close" onclick="closeCategoryModal()">&times;</span>
+                <h3 id="category-modal-title">Edit Category</h3>
+                <span class="close" onclick="closeCategoryDialog()">&times;</span>
             </div>
             <div class="form-group">
-                <label>Name</label>
+                <label>Category Name</label>
                 <input type="text" id="cat-name">
             </div>
             <div class="form-group">
@@ -187,16 +220,15 @@
                 <label>Color</label>
                 <input type="color" id="cat-color" value="#007bff" class="color-picker-btn">
             </div>
-            <div class="form-group">
-                <label><input type="checkbox" id="cat-is-sub"> This is a subcategory</label>
+            <hr style="margin: 20px 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h4 style="margin: 0;">Subcategories</h4>
+                <button class="btn btn-success" style="font-size: 12px; padding: 4px 8px;" onclick="addSubcategoryRow()">+ Add</button>
             </div>
-            <div class="form-group" id="cat-parent-group" style="display: none;">
-                <label>Parent Category</label>
-                <select id="cat-parent"></select>
-            </div>
+            <div id="subcategories-list"></div>
             <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button class="btn btn-success" onclick="saveCategory()">Save</button>
-                <button class="btn btn-secondary" onclick="closeCategoryModal()">Cancel</button>
+                <button class="btn btn-success" onclick="saveCategoryDialog()">Save</button>
+                <button class="btn btn-secondary" onclick="closeCategoryDialog()">Cancel</button>
             </div>
         </div>
     </div>
@@ -280,6 +312,7 @@ expense | Transportation | Gas"></textarea>
         let accounts = [];
         let forecast = [];
         let editingCategoryId = null;
+        let currentView = 'text';
 
         async function init() {
             await loadCategories();
@@ -301,49 +334,69 @@ expense | Transportation | Gas"></textarea>
             populateCategorySelects();
         }
 
-        function renderCategoriesTree() {
-            const tree = document.getElementById('categories-tree');
-            tree.innerHTML = '';
+        function toggleCategoryView() {
+            currentView = currentView === 'text' ? 'list' : 'text';
+            document.getElementById('text-view').style.display = currentView === 'text' ? 'block' : 'none';
+            document.getElementById('list-view').style.display = currentView === 'list' ? 'block' : 'none';
+            if (currentView === 'list') renderCategoriesList();
+        }
+
+        function renderCategoriesList() {
+            const list = document.getElementById('categories-list');
+            list.innerHTML = '';
             
             categories.forEach(cat => {
-                const hasSubcategories = (cat.subcategories || []).length > 0;
-                
                 const div = document.createElement('div');
-                div.className = 'tree-item parent';
+                div.style.cssText = 'background: #f8f9fa; padding: 15px; margin-bottom: 10px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;';
                 div.innerHTML = `
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        ${hasSubcategories ? `<span class="expand-icon" onclick="toggleSubcategories(${cat.id})" style="cursor: pointer; font-size: 16px; user-select: none;">▶</span>` : '<span style="width: 16px;"></span>'}
+                    <div>
                         <span class="badge badge-${cat.type}">${cat.type}</span>
-                        <strong>${cat.name}</strong>
-                        ${cat.color ? `<span class="color-preview" style="background: ${cat.color}; width: 20px; height: 20px; border-radius: 3px; display: inline-block;"></span>` : ''}
-                        ${hasSubcategories ? `<span style="color: #6c757d; font-size: 12px;">(${cat.subcategories.length})</span>` : ''}
+                        <strong style="margin-left: 10px;">${cat.name}</strong>
+                        <span style="color: #6c757d; margin-left: 10px;">${(cat.subcategories || []).length} subcategories</span>
                     </div>
-                    <div class="tree-actions">
-                        <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteCategory(${cat.id})">Delete</button>
-                    </div>
+                    <button class="btn btn-primary" style="font-size: 12px; padding: 4px 8px;" onclick="openCategoryDialog(${cat.id})">Edit</button>
                 `;
-                tree.appendChild(div);
+                list.appendChild(div);
+            });
+        }
+
+        function renderCategoriesTree() {
+            const incomeText = document.getElementById('income-text');
+            const expenseText = document.getElementById('expense-text');
+            console.log('renderCategoriesTree called', {incomeText, expenseText, categoriesCount: categories.length});
+            if (!incomeText || !expenseText) {
+                console.error('Text areas not found!');
+                return;
+            }
+            
+            let incomeLines = [];
+            let expenseLines = [];
+            
+            categories.forEach(cat => {
+                const color = cat.color ? ' | ' + cat.color : '';
+                const line = `${cat.name}${color}`;
                 
-                if (hasSubcategories) {
-                    const subContainer = document.createElement('div');
-                    subContainer.id = `subcategories-${cat.id}`;
-                    subContainer.style.display = 'none';
-                    
-                    cat.subcategories.forEach(sub => {
-                        const subDiv = document.createElement('div');
-                        subDiv.className = 'tree-item child';
-                        subDiv.innerHTML = `
-                            <div style="padding-left: 30px;">${sub.name}</div>
-                            <div class="tree-actions">
-                                <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="deleteCategory(${sub.id})">Delete</button>
-                            </div>
-                        `;
-                        subContainer.appendChild(subDiv);
-                    });
-                    
-                    tree.appendChild(subContainer);
+                if (cat.type === 'income') {
+                    incomeLines.push(line);
+                    if (cat.subcategories && cat.subcategories.length > 0) {
+                        cat.subcategories.forEach(sub => {
+                            const subColor = sub.color ? ' | ' + sub.color : '';
+                            incomeLines.push(`${cat.name} | ${sub.name}${subColor}`);
+                        });
+                    }
+                } else if (cat.type === 'expense') {
+                    expenseLines.push(line);
+                    if (cat.subcategories && cat.subcategories.length > 0) {
+                        cat.subcategories.forEach(sub => {
+                            const subColor = sub.color ? ' | ' + sub.color : '';
+                            expenseLines.push(`${cat.name} | ${sub.name}${subColor}`);
+                        });
+                    }
                 }
             });
+            
+            incomeText.value = incomeLines.join('\n');
+            expenseText.value = expenseLines.join('\n');
         }
 
         function toggleSubcategories(categoryId) {
@@ -357,6 +410,114 @@ expense | Transportation | Gas"></textarea>
                 container.style.display = 'none';
                 icon.textContent = '▶';
             }
+        }
+
+        function openCategoryDialog(id = null) {
+            editingCategoryId = id;
+            const cat = id ? categories.find(c => c.id === id) : null;
+            
+            document.getElementById('category-modal-title').textContent = id ? 'Edit Category' : 'Add Category';
+            document.getElementById('cat-name').value = cat ? cat.name : '';
+            document.getElementById('cat-type').value = cat ? cat.type : 'expense';
+            document.getElementById('cat-color').value = cat ? (cat.color || '#007bff') : '#007bff';
+            
+            const subList = document.getElementById('subcategories-list');
+            subList.innerHTML = '';
+            
+            if (cat && cat.subcategories) {
+                cat.subcategories.forEach(sub => {
+                    addSubcategoryRow(sub.name, sub.id);
+                });
+            }
+            
+            document.getElementById('category-modal').classList.add('active');
+        }
+
+        function addSubcategoryRow(name = '', id = null) {
+            const subList = document.getElementById('subcategories-list');
+            const div = document.createElement('div');
+            div.style.cssText = 'display: flex; gap: 10px; margin-bottom: 8px; align-items: center;';
+            div.innerHTML = `
+                <input type="text" value="${name}" placeholder="Subcategory name" style="flex: 1; padding: 6px; border: 1px solid #ddd; border-radius: 4px;" data-sub-id="${id || ''}">
+                <button class="btn btn-danger" style="font-size: 12px; padding: 4px 8px;" onclick="this.parentElement.remove()">✕</button>
+            `;
+            subList.appendChild(div);
+        }
+
+        async function saveCategoryDialog() {
+            const name = document.getElementById('cat-name').value.trim();
+            const type = document.getElementById('cat-type').value;
+            const color = document.getElementById('cat-color').value;
+            
+            if (!name) {
+                alert('Category name is required');
+                return;
+            }
+            
+            let categoryId = editingCategoryId;
+            
+            // Save parent category
+            if (categoryId) {
+                await fetch(`/api/categories/${categoryId}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name, type, color})
+                });
+            } else {
+                const res = await fetch('/api/categories', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name, type, color})
+                });
+                const cat = await res.json();
+                categoryId = cat.id;
+            }
+            
+            // Get existing subcategories
+            const cat = categories.find(c => c.id === categoryId);
+            const existingSubs = cat ? (cat.subcategories || []).map(s => s.id) : [];
+            
+            // Save subcategories
+            const subInputs = document.querySelectorAll('#subcategories-list input');
+            const processedSubs = [];
+            
+            for (const input of subInputs) {
+                const subName = input.value.trim();
+                if (!subName) continue;
+                
+                const subId = input.dataset.subId;
+                processedSubs.push(subId);
+                
+                if (subId && subId !== '') {
+                    // Update existing
+                    await fetch(`/api/categories/${subId}`, {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({name: subName, type, color})
+                    });
+                } else {
+                    // Create new
+                    await fetch('/api/categories', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({name: subName, type, color, parent_id: categoryId})
+                    });
+                }
+            }
+            
+            // Delete removed subcategories
+            for (const subId of existingSubs) {
+                if (!processedSubs.includes(String(subId))) {
+                    await fetch(`/api/categories/${subId}`, {method: 'DELETE'});
+                }
+            }
+            
+            closeCategoryDialog();
+            await loadCategories();
+        }
+
+        function closeCategoryDialog() {
+            document.getElementById('category-modal').classList.remove('active');
         }
 
         function openCategoryModal(id = null) {
@@ -436,6 +597,251 @@ expense | Transportation | Gas"></textarea>
             await loadCategories();
         }
 
+        // Save all categories from text fields (v2)
+        async function saveAllCategories() {
+            const incomeText = document.getElementById('income-text').value;
+            const expenseText = document.getElementById('expense-text').value;
+            
+            const incomeLines = incomeText.split('\n').filter(l => l.trim());
+            const expenseLines = expenseText.split('\n').filter(l => l.trim());
+            
+            // Validate
+            const errors = [];
+            const seen = new Set();
+            
+            const validateLines = (lines, type) => {
+                lines.forEach((line, i) => {
+                    const parts = line.split('|').map(p => p.trim());
+                    if (parts.length < 1) {
+                        errors.push(`${type} line ${i+1}: Invalid format`);
+                        return;
+                    }
+                    
+                    const key = `${type}|${parts.join('|')}`.toLowerCase();
+                    if (seen.has(key)) {
+                        errors.push(`${type} line ${i+1}: Duplicate "${parts.join(' > ')}"`);
+                    }
+                    seen.add(key);
+                });
+            };
+            
+            validateLines(incomeLines, 'Income');
+            validateLines(expenseLines, 'Expense');
+            
+            if (errors.length > 0) {
+                alert('Validation errors:\n\n' + errors.join('\n'));
+                return;
+            }
+            
+            // Build map of existing categories
+            const existingMap = new Map();
+            categories.forEach(cat => {
+                existingMap.set(cat.name.toLowerCase(), cat);
+                
+                if (cat.subcategories) {
+                    cat.subcategories.forEach(sub => {
+                        const key = `${cat.name}|${sub.name}`.toLowerCase();
+                        existingMap.set(key, sub);
+                    });
+                }
+            });
+            
+            // Analyze changes
+            const toCreate = [];
+            const toUpdate = [];
+            const shouldExist = new Set();
+            
+            const analyzeLines = (lines, type) => {
+                lines.forEach(line => {
+                    const parts = line.split('|').map(p => p.trim());
+                    const name1 = parts[0];
+                    const name2 = parts.length > 1 && !parts[1].startsWith('#') ? parts[1] : null;
+                    const color = parts.find(p => p.startsWith('#')) || '#007bff';
+                    
+                    if (!name2) {
+                        // Parent category
+                        const key = name1.toLowerCase();
+                        shouldExist.add(key);
+                        const existing = existingMap.get(key);
+                        
+                        if (existing) {
+                            if (existing.type !== type || existing.color !== color) {
+                                toUpdate.push(`${name1} (change type/color)`);
+                            }
+                        } else {
+                            toCreate.push(`${name1} (${type})`);
+                        }
+                    } else {
+                        // Subcategory
+                        const key = `${name1}|${name2}`.toLowerCase();
+                        shouldExist.add(key);
+                        const existing = existingMap.get(key);
+                        
+                        if (existing) {
+                            if (existing.type !== type || existing.color !== color) {
+                                toUpdate.push(`${name1} > ${name2} (change type/color)`);
+                            }
+                        } else {
+                            toCreate.push(`${name1} > ${name2} (${type})`);
+                        }
+                    }
+                });
+            };
+            
+            analyzeLines(incomeLines, 'income');
+            analyzeLines(expenseLines, 'expense');
+            
+            // Find deletions
+            const toDelete = [];
+            categories.forEach(cat => {
+                const key1 = cat.name.toLowerCase();
+                if (!shouldExist.has(key1)) {
+                    toDelete.push(cat.name);
+                }
+                
+                if (cat.subcategories) {
+                    cat.subcategories.forEach(sub => {
+                        const key2 = `${cat.name}|${sub.name}`.toLowerCase();
+                        if (!shouldExist.has(key2)) {
+                            toDelete.push(`${cat.name} > ${sub.name}`);
+                        }
+                    });
+                }
+            });
+            
+            // Show confirmation
+            let message = 'Review changes:\n\n';
+            
+            if (toCreate.length > 0) {
+                message += `✅ CREATE (${toCreate.length}):\n${toCreate.map(c => '  + ' + c).join('\n')}\n\n`;
+            }
+            
+            if (toUpdate.length > 0) {
+                message += `✏️ UPDATE (${toUpdate.length}):\n${toUpdate.map(c => '  ~ ' + c).join('\n')}\n\n`;
+            }
+            
+            if (toDelete.length > 0) {
+                message += `❌ DELETE (${toDelete.length}):\n${toDelete.map(c => '  - ' + c).join('\n')}\n\n`;
+            }
+            
+            if (toCreate.length === 0 && toUpdate.length === 0 && toDelete.length === 0) {
+                alert('No changes detected.');
+                return;
+            }
+            
+            message += 'Continue?';
+            
+            if (!confirm(message)) return;
+            
+            const parents = new Map();
+            
+            const processLines = async (lines, type) => {
+                for (const line of lines) {
+                    const parts = line.split('|').map(p => p.trim());
+                    if (parts.length < 1) continue;
+                    
+                    const name1 = parts[0];
+                    const name2 = parts.length > 1 && !parts[1].startsWith('#') ? parts[1] : null;
+                    const color = parts.find(p => p.startsWith('#')) || '#007bff';
+                    
+                    if (!name2) {
+                        // Parent category
+                        const key = name1.toLowerCase();
+                        shouldExist.add(key);
+                        const existing = existingMap.get(key);
+                        
+                        if (existing) {
+                            if (existing.type !== type || existing.color !== color) {
+                                await fetch(`/api/categories/${existing.id}`, {
+                                    method: 'PATCH',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({type, color})
+                                });
+                            }
+                            parents.set(name1, existing.id);
+                        } else {
+                            const res = await fetch('/api/categories', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({name: name1, type, color})
+                            });
+                            if (!res.ok) {
+                                const error = await res.text();
+                                throw new Error(`Failed to create ${name1}: ${error}`);
+                            }
+                            const cat = await res.json();
+                            parents.set(name1, cat.id);
+                        }
+                    } else {
+                        // Subcategory
+                        const key = `${name1}|${name2}`.toLowerCase();
+                        shouldExist.add(key);
+                        
+                        let parentId = parents.get(name1);
+                        if (!parentId) {
+                            const parentKey = name1.toLowerCase();
+                            const existingParent = existingMap.get(parentKey);
+                            if (existingParent) {
+                                parentId = existingParent.id;
+                            } else {
+                                const res = await fetch('/api/categories', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({name: name1, type, color})
+                                });
+                                if (!res.ok) {
+                                    const error = await res.text();
+                                    throw new Error(`Failed to create parent ${name1}: ${error}`);
+                                }
+                                const parent = await res.json();
+                                parentId = parent.id;
+                            }
+                            parents.set(name1, parentId);
+                        }
+                        
+                        const existing = existingMap.get(key);
+                        if (existing) {
+                            if (existing.type !== type || existing.color !== color) {
+                                await fetch(`/api/categories/${existing.id}`, {
+                                    method: 'PATCH',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({type, color})
+                                });
+                            }
+                        } else {
+                            const res = await fetch('/api/categories', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({name: name2, type, color, parent_id: parentId})
+                            });
+                            if (!res.ok) {
+                                const error = await res.text();
+                                throw new Error(`Failed to create subcategory ${name2}: ${error}`);
+                            }
+                        }
+                    }
+                }
+            };
+            
+            try {
+                await processLines(incomeLines, 'income');
+                await processLines(expenseLines, 'expense');
+                
+                await loadCategories();
+                alert('Categories saved!');
+            } catch (error) {
+                alert('Error saving categories: ' + error.message);
+                console.error(error);
+            }
+        }
+        
+        function findParentName(parentId) {
+            for (const cat of categories) {
+                if (cat.id === parentId) return cat.name;
+            }
+            return '';
+        }
+
         async function deleteCategory(id) {
             if (!confirm('Delete this category?')) return;
             const res = await fetch(`/api/categories/${id}`, {method: 'DELETE'});
@@ -464,9 +870,10 @@ expense | Transportation | Gas"></textarea>
         }
 
         function populateCategorySelects() {
-            const selects = ['rule-category', 'cat-parent', 'fc-category'];
+            const selects = ['rule-category', 'fc-category'];
             selects.forEach(selectId => {
                 const select = document.getElementById(selectId);
+                if (!select) return;
                 select.innerHTML = '<option value="">Select...</option>';
                 categories.forEach(cat => {
                     const opt = document.createElement('option');
@@ -484,14 +891,11 @@ expense | Transportation | Gas"></textarea>
             });
         }
 
-        document.getElementById('cat-is-sub').addEventListener('change', function() {
-            document.getElementById('cat-parent-group').style.display = this.checked ? 'block' : 'none';
-        });
-
         // Rules
         async function loadRules() {
             const res = await fetch('/api/category-rules');
-            rules = await res.json();
+            const data = await res.json();
+            rules = data.rules || [];
             renderRules();
         }
 
@@ -515,23 +919,59 @@ expense | Transportation | Gas"></textarea>
         }
 
         async function addRule() {
-            const data = {
-                pattern: document.getElementById('rule-pattern').value,
-                category_id: parseInt(document.getElementById('rule-category').value),
-                priority: parseInt(document.getElementById('rule-priority').value)
-            };
+            const pattern = document.getElementById('rule-pattern').value.trim();
+            const parentId = document.getElementById('rule-category').value;
+            const subId = document.getElementById('rule-subcategory').value;
+            const priority = parseInt(document.getElementById('rule-priority').value);
+            
+            if (!pattern) {
+                alert('Pattern is required');
+                return;
+            }
+            
+            // Use subcategory if selected, otherwise parent
+            const categoryId = subId || parentId;
+            
+            if (!categoryId) {
+                alert('Please select a category');
+                return;
+            }
             
             await fetch('/api/category-rules', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(data)
+                body: JSON.stringify({
+                    pattern,
+                    category_id: parseInt(categoryId),
+                    priority
+                })
             });
             
             document.getElementById('rule-pattern').value = '';
             document.getElementById('rule-category').value = '';
+            document.getElementById('rule-subcategory').value = '';
+            document.getElementById('rule-subcategory-group').style.display = 'none';
             document.getElementById('rule-priority').value = '5';
             
             await loadRules();
+        }
+        
+        function updateRuleSubcategories() {
+            const parentId = document.getElementById('rule-category').value;
+            const parent = categories.find(c => c.id == parentId);
+            const subs = parent?.subcategories || [];
+            
+            const subGroup = document.getElementById('rule-subcategory-group');
+            const subSelect = document.getElementById('rule-subcategory');
+            
+            if (subs.length > 0) {
+                subSelect.innerHTML = '<option value="">Select subcategory...</option>' +
+                    subs.map(sub => `<option value="${sub.id}">${sub.name}</option>`).join('');
+                subGroup.style.display = 'block';
+            } else {
+                subGroup.style.display = 'none';
+                subSelect.value = '';
+            }
         }
 
         async function deleteRule(id) {
@@ -594,7 +1034,8 @@ expense | Transportation | Gas"></textarea>
         // Forecast
         async function loadForecast() {
             const res = await fetch('/api/forecast');
-            forecast = await res.json();
+            const data = await res.json();
+            forecast = data.items || [];
             renderForecast();
         }
 
@@ -608,7 +1049,7 @@ expense | Transportation | Gas"></textarea>
                 tr.innerHTML = `
                     <td>${item.name}</td>
                     <td>${cat?.name || 'Unknown'}</td>
-                    <td>$${parseFloat(item.amount).toFixed(2)}</td>
+                    <td>$${parseFloat(item.amount || 0).toFixed(2)}</td>
                     <td>${item.frequency}</td>
                     <td>${item.type}</td>
                     <td>

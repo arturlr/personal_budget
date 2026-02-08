@@ -221,11 +221,12 @@
             const from = `${currentYear}-01-01`;
             const to = `${currentYear}-12-31`;
             
-            const res = await fetch(`/api/transactions?from=${from}&to=${to}&exclude_cc_payments=true`);
-            const transactions = await res.json();
+            const res = await fetch(`/api/transactions?from=${from}&to=${to}&exclude_cc_payments=true&per_page=1000`);
+            const data = await res.json();
+            const transactions = data.transactions || [];
             
-            const income = transactions.filter(t => t.amount > 0).reduce((sum, t) => sum + t.amount, 0);
-            const expenses = transactions.filter(t => t.amount < 0).reduce((sum, t) => sum + Math.abs(t.amount), 0);
+            const income = transactions.filter(t => parseFloat(parseFloat(t.amount)) > 0).reduce((sum, t) => sum + parseFloat(parseFloat(t.amount)), 0);
+            const expenses = transactions.filter(t => parseFloat(parseFloat(t.amount)) < 0).reduce((sum, t) => sum + Math.abs(parseFloat(parseFloat(t.amount))), 0);
             const net = income - expenses;
             
             document.getElementById('total-income').textContent = `$${income.toFixed(2)}`;
@@ -238,8 +239,9 @@
             const from = `${currentYear}-01-01`;
             const to = `${currentYear}-12-31`;
             
-            const res = await fetch(`/api/transactions?from=${from}&to=${to}&exclude_cc_payments=true`);
-            const transactions = await res.json();
+            const res = await fetch(`/api/transactions?from=${from}&to=${to}&exclude_cc_payments=true&per_page=1000`);
+            const data = await res.json();
+            const transactions = data.transactions || [];
             
             const monthlyData = {};
             for (let i = 1; i <= 12; i++) {
@@ -249,10 +251,10 @@
             let runningBalance = 0;
             transactions.forEach(t => {
                 const month = new Date(t.date).getMonth() + 1;
-                if (t.amount > 0) {
-                    monthlyData[month].income += t.amount;
+                if (parseFloat(t.amount) > 0) {
+                    monthlyData[month].income += parseFloat(t.amount);
                 } else {
-                    monthlyData[month].expenses += Math.abs(t.amount);
+                    monthlyData[month].expenses += Math.abs(parseFloat(t.amount));
                 }
             });
             
@@ -368,11 +370,11 @@
             
             const categoryTotals = {};
             
-            allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+            allTransactions.filter(t => parseFloat(t.amount) < 0 && t.category_id).forEach(t => {
                 if (!categoryTotals[t.category_id]) {
                     categoryTotals[t.category_id] = 0;
                 }
-                categoryTotals[t.category_id] += Math.abs(t.amount);
+                categoryTotals[t.category_id] += Math.abs(parseFloat(t.amount));
             });
             
             const sortedCategories = Object.entries(categoryTotals)
@@ -407,11 +409,11 @@
             
             const categoryTotals = {};
             
-            allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+            allTransactions.filter(t => parseFloat(t.amount) < 0 && t.category_id).forEach(t => {
                 if (!categoryTotals[t.category_id]) {
                     categoryTotals[t.category_id] = 0;
                 }
-                categoryTotals[t.category_id] += Math.abs(t.amount);
+                categoryTotals[t.category_id] += Math.abs(parseFloat(t.amount));
             });
             
             const sortedCategories = Object.entries(categoryTotals)
@@ -444,7 +446,7 @@
             // Group data by parent categories with subcategories
             const categoryData = {};
             
-            allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+            allTransactions.filter(t => parseFloat(t.amount) < 0 && t.category_id).forEach(t => {
                 const cat = findCategory(allCategories, t.category_id);
                 if (!cat) return;
                 
@@ -475,7 +477,7 @@
                     if (!categoryData[parent.id].subcategories[key]) {
                         categoryData[parent.id].subcategories[key] = 0;
                     }
-                    categoryData[parent.id].subcategories[key] += Math.abs(t.amount);
+                    categoryData[parent.id].subcategories[key] += Math.abs(parseFloat(t.amount));
                 }
             });
             
@@ -562,9 +564,9 @@
                         categoryTotals[sub.id] = 0;
                     });
                     
-                    allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+                    allTransactions.filter(t => parseFloat(t.amount) < 0 && t.category_id).forEach(t => {
                         if (categoryTotals.hasOwnProperty(t.category_id)) {
-                            categoryTotals[t.category_id] += Math.abs(t.amount);
+                            categoryTotals[t.category_id] += Math.abs(parseFloat(t.amount));
                         }
                     });
                     
@@ -582,7 +584,7 @@
                     categoryTotals[cat.id] = 0;
                 });
                 
-                allTransactions.filter(t => t.amount < 0 && t.category_id).forEach(t => {
+                allTransactions.filter(t => parseFloat(t.amount) < 0 && t.category_id).forEach(t => {
                     const cat = findCategory(allCategories, t.category_id);
                     if (cat) {
                         // Find parent category
@@ -591,7 +593,7 @@
                             (c.subcategories && c.subcategories.some(s => s.id === t.category_id))
                         );
                         if (parent && categoryTotals.hasOwnProperty(parent.id)) {
-                            categoryTotals[parent.id] += Math.abs(t.amount);
+                            categoryTotals[parent.id] += Math.abs(parseFloat(t.amount));
                         }
                     }
                 });
@@ -734,10 +736,10 @@
                         weeklyData[weekKey] = { income: 0, expenses: 0 };
                     }
                     
-                    if (t.amount > 0) {
-                        weeklyData[weekKey].income += t.amount;
+                    if (parseFloat(t.amount) > 0) {
+                        weeklyData[weekKey].income += parseFloat(t.amount);
                     } else {
-                        weeklyData[weekKey].expenses += Math.abs(t.amount);
+                        weeklyData[weekKey].expenses += Math.abs(parseFloat(t.amount));
                     }
                 });
                 

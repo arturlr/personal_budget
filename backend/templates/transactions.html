@@ -100,6 +100,25 @@
             <span id="selected-count" style="padding: 8px; color: #6c757d;"></span>
         </div>
 
+        <div class="pagination" id="pagination" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 4px;">
+            <div>
+                <span id="page-info">Page 1 of 1 (0 items)</span>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button onclick="goToPage(1)" id="btn-first" style="padding: 6px 12px; border: 1px solid #ddd; background: white; border-radius: 4px; cursor: pointer;">First</button>
+                <button onclick="goToPage(pagination.page - 1)" id="btn-prev" style="padding: 6px 12px; border: 1px solid #ddd; background: white; border-radius: 4px; cursor: pointer;">Previous</button>
+                <select id="page-select" onchange="goToPage(parseInt(this.value))" style="padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px;"></select>
+                <button onclick="goToPage(pagination.page + 1)" id="btn-next" style="padding: 6px 12px; border: 1px solid #ddd; background: white; border-radius: 4px; cursor: pointer;">Next</button>
+                <button onclick="goToPage(pagination.pages)" id="btn-last" style="padding: 6px 12px; border: 1px solid #ddd; background: white; border-radius: 4px; cursor: pointer;">Last</button>
+                <select id="per-page" onchange="changePerPage()" style="padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px;">
+                    <option value="25">25 per page</option>
+                    <option value="50">50 per page</option>
+                    <option value="100" selected>100 per page</option>
+                    <option value="200">200 per page</option>
+                </select>
+            </div>
+        </div>
+
         <div id="loading" class="loading">Loading transactions...</div>
         
         <table id="transactions-table" style="display: none;">
@@ -110,7 +129,6 @@
                     <th>Account</th>
                     <th>Memo</th>
                     <th>Amount</th>
-                    <th>Suggested</th>
                     <th>Category</th>
                     <th>Status</th>
                     <th>Actions</th>
@@ -122,6 +140,7 @@
 
     <script>
         let transactions = [];
+        let pagination = {};
         let accounts = [];
         let categories = [];
         let selectedIds = new Set();
@@ -160,6 +179,13 @@
             document.getElementById('transactions-table').style.display = 'none';
             
             const params = new URLSearchParams();
+            
+            // Pagination
+            const urlParams = new URLSearchParams(window.location.search);
+            const page = urlParams.get('page') || '1';
+            const perPage = urlParams.get('per_page') || '100';
+            params.append('page', page);
+            params.append('per_page', perPage);
             const from = document.getElementById('filter-from').value;
             const to = document.getElementById('filter-to').value;
             const account = document.getElementById('filter-account').value;
@@ -176,7 +202,9 @@
             if (hideCC) params.append('exclude_cc_payments', 'true');
             
             const res = await fetch(`/api/transactions?${params}`);
-            transactions = await res.json();
+            const data = await res.json();
+            transactions = data.transactions || [];
+            pagination = data.pagination || {};
             
             renderTransactions();
             updateStats();
@@ -188,6 +216,7 @@
         function renderTransactions() {
             const tbody = document.getElementById('transactions-body');
             tbody.innerHTML = '';
+            updatePagination();
             
             transactions.forEach(txn => {
                 const tr = document.createElement('tr');
@@ -195,7 +224,6 @@
                 if (txn.is_credit_card_payment) tr.classList.add('cc-payment');
                 
                 const account = accounts.find(a => a.id === txn.account_id);
-                const suggestedCat = findCategory(txn.suggested_category_id);
                 
                 tr.innerHTML = `
                     <td><input type="checkbox" class="txn-select" data-id="${txn.id}" onchange="updateSelectedCount()"></td>
@@ -203,7 +231,6 @@
                     <td>${account?.name || 'Unknown'}</td>
                     <td>${txn.memo} ${txn.is_credit_card_payment ? '<span class="icon-cc">💳</span>' : ''}</td>
                     <td class="amount ${txn.amount >= 0 ? 'positive' : 'negative'}">$${Math.abs(txn.amount).toFixed(2)}</td>
-                    <td>${suggestedCat || '-'}</td>
                     <td>${renderCategorySelect(txn)}</td>
                     <td><span class="badge ${txn.is_approved ? 'approved' : 'pending'}">${txn.is_approved ? 'Approved' : 'Pending'}</span></td>
                     <td>
@@ -227,16 +254,80 @@
         }
 
         function renderCategorySelect(txn) {
-            const select = `<select class="category" onchange="updateCategory(${txn.id}, this.value)">
-                <option value="">Select...</option>
-                ${categories.map(cat => `
-                    <option value="${cat.id}" ${txn.category_id === cat.id ? 'selected' : ''}>${cat.name}</option>
-                    ${(cat.subcategories || []).map(sub => 
-                        `<option value="${sub.id}" ${txn.category_id === sub.id ? 'selected' : ''}>— ${sub.name}</option>`
-                    ).join('')}
-                `).join('')}
-            </select>`;
-            return select;
+            let parentId = '';
+            let subId = '';
+            
+            // Find if current category is a subcategory
+            if (txn.category_id) {
+                for (const cat of categories) {
+                    if (cat.id === txn.category_id) {
+                        // It's a parent category
+                        parentId = cat.id;
+                        break;
+                    }
+                    if (cat.subcategories) {
+                        const sub = cat.subcategories.find(s => s.id === txn.category_id);
+                        if (sub) {
+                            // It's a subcategory
+                            parentId = cat.id;
+                            subId = sub.id;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            const parent = categories.find(c => c.id == parentId);
+            const subs = parent?.subcategories || [];
+            
+            return `
+                <div style="display: flex; gap: 5px;">
+                    <select class="category" onchange="handleCategoryChange(${txn.id}, this)" style="width: 120px;">
+                        <option value="">Category...</option>
+                        ${categories.map(cat => 
+                            `<option value="${cat.id}" ${parentId == cat.id ? 'selected' : ''}>${cat.name}</option>`
+                        ).join('')}
+                    </select>
+                    <select class="subcategory" data-txn-id="${txn.id}" onchange="updateCategory(${txn.id}, this.value)" style="width: 120px; ${subs.length ? '' : 'display:none;'}">
+                        <option value="">Subcategory...</option>
+                        ${subs.map(sub => 
+                            `<option value="${sub.id}" ${subId == sub.id ? 'selected' : ''}>${sub.name}</option>`
+                        ).join('')}
+                    </select>
+                </div>
+            `;
+        }
+
+        function handleCategoryChange(txnId, selectElement) {
+            const parentId = selectElement.value;
+            const parent = categories.find(c => c.id == parentId);
+            const subs = parent?.subcategories || [];
+            
+            // Find the subcategory dropdown in the same row
+            const subSelect = selectElement.parentElement.querySelector('.subcategory');
+            
+            if (subs.length > 0) {
+                // Show subcategory dropdown
+                subSelect.innerHTML = '<option value="">Subcategory...</option>' + 
+                    subs.map(sub => `<option value="${sub.id}">${sub.name}</option>`).join('');
+                subSelect.style.display = '';
+            } else {
+                // Hide subcategory dropdown and save parent
+                subSelect.style.display = 'none';
+                updateCategory(txnId, parentId);
+            }
+        }
+
+        function findCategoryById(id) {
+            if (!id) return null;
+            for (const cat of categories) {
+                if (cat.id === id) return cat;
+                if (cat.subcategories) {
+                    const sub = cat.subcategories.find(s => s.id === id);
+                    if (sub) return sub;
+                }
+            }
+            return null;
         }
 
         async function updateCategory(txnId, categoryId) {
@@ -255,9 +346,8 @@
 
         async function approveSingle(txnId) {
             const txn = transactions.find(t => t.id === txnId);
-            const categoryId = txn.category_id || txn.suggested_category_id;
             
-            if (!categoryId) {
+            if (!txn.category_id) {
                 alert('Please select a category before approving');
                 return;
             }
@@ -267,7 +357,7 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     is_approved: true,
-                    category_id: categoryId
+                    category_id: txn.category_id
                 })
             });
             await loadTransactions();
@@ -291,7 +381,7 @@
             // Check all selected have categories
             const missingCategory = Array.from(selectedIds).some(id => {
                 const txn = transactions.find(t => t.id === id);
-                return !txn.category_id && !txn.suggested_category_id;
+                return !txn.category_id;
             });
             
             if (missingCategory) {
@@ -301,13 +391,12 @@
             
             for (const id of selectedIds) {
                 const txn = transactions.find(t => t.id === id);
-                const categoryId = txn.category_id || txn.suggested_category_id;
                 await fetch(`/api/transactions/${id}`, {
                     method: 'PATCH',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         is_approved: true,
-                        category_id: categoryId
+                        category_id: txn.category_id
                     })
                 });
             }
@@ -339,8 +428,8 @@
         function updateStats() {
             const total = transactions.length;
             const pending = transactions.filter(t => !t.is_approved).length;
-            const income = transactions.filter(t => t.amount > 0).reduce((sum, t) => sum + t.amount, 0);
-            const expenses = transactions.filter(t => t.amount < 0).reduce((sum, t) => sum + Math.abs(t.amount), 0);
+            const income = transactions.filter(t => parseFloat(t.amount) > 0).reduce((sum, t) => sum + parseFloat(t.amount), 0);
+            const expenses = transactions.filter(t => parseFloat(t.amount) < 0).reduce((sum, t) => sum + Math.abs(parseFloat(t.amount)), 0);
             
             document.getElementById('stat-total').textContent = total;
             document.getElementById('stat-pending').textContent = pending;
@@ -359,6 +448,52 @@
         }
 
         init();
+    
+        function updatePagination() {
+            if (!pagination.total) {
+                document.getElementById('pagination').style.display = 'none';
+                return;
+            }
+            
+            document.getElementById('pagination').style.display = 'flex';
+            document.getElementById('page-info').textContent = 
+                `Page ${pagination.page} of ${pagination.pages} (${pagination.total} items)`;
+            
+            // Update buttons
+            document.getElementById('btn-first').disabled = pagination.page === 1;
+            document.getElementById('btn-prev').disabled = pagination.page === 1;
+            document.getElementById('btn-next').disabled = pagination.page === pagination.pages;
+            document.getElementById('btn-last').disabled = pagination.page === pagination.pages;
+            
+            // Update page select
+            const pageSelect = document.getElementById('page-select');
+            pageSelect.innerHTML = '';
+            for (let i = 1; i <= pagination.pages; i++) {
+                const option = document.createElement('option');
+                option.value = i;
+                option.textContent = `Page ${i}`;
+                if (i === pagination.page) option.selected = true;
+                pageSelect.appendChild(option);
+            }
+        }
+        
+        function goToPage(page) {
+            if (page < 1 || page > pagination.pages) return;
+            const params = new URLSearchParams(window.location.search);
+            params.set('page', page);
+            window.history.pushState({}, '', `?${params}`);
+            loadTransactions();
+        }
+        
+        function changePerPage() {
+            const perPage = document.getElementById('per-page').value;
+            const params = new URLSearchParams(window.location.search);
+            params.set('per_page', perPage);
+            params.set('page', '1');
+            window.history.pushState({}, '', `?${params}`);
+            loadTransactions();
+        }
+
     </script>
 </body>
 </html>

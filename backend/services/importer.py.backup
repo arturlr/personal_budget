@@ -4,7 +4,6 @@ from datetime import datetime
 from io import StringIO
 import ofxparse
 from models import Transaction, Account, db
-from sqlalchemy.exc import IntegrityError
 
 def detect_csv_format(file_content):
     """Detect if CSV is 3-column or 4-column format"""
@@ -105,6 +104,12 @@ def import_transactions(transactions_list, account_id):
             txn_data['amount']
         )
         
+        # Check for duplicate
+        existing = Transaction.query.filter_by(unique_hash=unique_hash).first()
+        if existing:
+            duplicates += 1
+            continue
+        
         transaction = Transaction(
             account_id=account_id,
             date=txn_data['date'],
@@ -114,13 +119,8 @@ def import_transactions(transactions_list, account_id):
             is_approved=False
         )
         
-        try:
-            db.session.add(transaction)
-            db.session.flush()
-            imported += 1
-        except IntegrityError:
-            db.session.rollback()
-            duplicates += 1
+        db.session.add(transaction)
+        imported += 1
     
     db.session.commit()
     return {'imported': imported, 'duplicates_skipped': duplicates}

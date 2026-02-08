@@ -18,9 +18,12 @@ class Account(db.Model):
 
 class Category(db.Model):
     __tablename__ = 'categories'
+    __table_args__ = (
+        db.UniqueConstraint('name', 'parent_id', name='uq_category_name_parent'),
+    )
     
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False, unique=True)
+    name = db.Column(db.String(100), nullable=False)
     parent_id = db.Column(db.Integer, db.ForeignKey('categories.id'))
     type = db.Column(db.String(20), nullable=False)  # income | expense | transfer
     color = db.Column(db.String(20))
