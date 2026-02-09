@@ -16,15 +16,30 @@ PostgreSQL database
 
 ### **Background:**
 
-Current Architecture:
-- Flask monolith with SQLAlchemy ORM
-- SQLite database (single-tenant)
-- Server-side rendered HTML templates
-- Direct file uploads to Flask endpoint
-- 5 main entities: Account, Category, Transaction, CategoryRule, ForecastItem
-- Business logic in services: importer, categorizer, accrual, forecast
+Current Architecture (from `.kiro/architecture.md` and `.kiro/technical_context.md`):
+- **Framework**: Flask 3.1.2 monolith with SQLAlchemy 2.0.46 ORM
+- **Database**: SQLite (file-based at backend/instance/budget.db)
+- **Migrations**: Flask-Migrate 4.1.0 (Alembic)
+- **Frontend**: Server-side rendered HTML templates with vanilla JavaScript and Chart.js
+- **Python Version**: 3.8+ required (developed with Python 3.13)
+- **5 main entities**: Account, Category, Transaction, CategoryRule, ForecastItem
+- **Business logic services**: 
+  - `importer.py` - CSV/OFX parsing with hash-based deduplication
+  - `categorizer.py` - Pattern-based rule matching with priority ordering
+  - `accrual.py` - Accrual calculation logic (Phase 7)
+  - `forecast.py` - Budget forecasting logic (Phase 8)
+
+Current Implementation Status (from `.kiro/project_context.md`):
+- **Phase 1**: ✅ Complete - Core foundations (models, database, Flask setup)
+- **Phase 2**: ✅ Complete - Import & categorization (CSV/OFX, rules, API)
+- **Phase 3**: ✅ Complete - Transactions UI
+- **Phase 4**: ✅ Complete - Config area (categories, rules, accounts, forecast)
+- **Phase 5**: ✅ Complete - Dashboard & visualizations
+- **Phase 6**: 🚧 In Progress - Cash flow reports
+- **Phases 7-9**: Planned (Accrual reports, Budget vs Actual, Enhancements)
 
 Target AWS Architecture:
+```
 ┌─────────────┐
 │   User      │
 └──────┬──────┘
@@ -59,7 +74,388 @@ Target AWS Architecture:
 │    S3    │
 │  Uploads │
 └──────────┘
+```
 
+---
+
+## **Current Database Schema to AWS PostgreSQL Mapping**
+
+Based on `.kiro/database_schema.md`, the following tables need multi-tenant transformation:
+
+### **accounts**
+```sql
+-- Current SQLite Schema
+CREATE TABLE accounts (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    account_number VARCHAR(50),
+    starting_balance DECIMAL(10, 2) DEFAULT 0
+);
+
+-- Target PostgreSQL Schema (Multi-tenant)
+CREATE TABLE accounts (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,  -- Added for multi-tenancy
+    name VARCHAR(100) NOT NULL,
+    account_number VARCHAR(50),
+    starting_balance DECIMAL(10, 2) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_accounts_user_id ON accounts(user_id);
+```
+
+### **categories**
+```sql
+-- Current SQLite Schema (Hierarchical with self-reference)
+CREATE TABLE categories (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    parent_id INTEGER,
+    type VARCHAR(20) NOT NULL,  -- 'income', 'expense', or 'transfer'
+    color VARCHAR(20),
+    CONSTRAINT uq_category_name_parent UNIQUE (name, parent_id),
+    FOREIGN KEY(parent_id) REFERENCES categories (id)
+);
+
+-- Target PostgreSQL Schema (Multi-tenant)
+CREATE TABLE categories (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,  -- Added for multi-tenancy
+    name VARCHAR(100) NOT NULL,
+    parent_id INTEGER,
+    type VARCHAR(20) NOT NULL CHECK (type IN ('income', 'expense', 'transfer')),
+    color VARCHAR(20),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_category_name_parent_user UNIQUE (user_id, name, parent_id),
+    FOREIGN KEY(parent_id) REFERENCES categories (id)
+);
+CREATE INDEX idx_categories_user_id ON categories(user_id);
+CREATE INDEX idx_categories_parent_id ON categories(parent_id);
+```
+
+### **transactions**
+```sql
+-- Current SQLite Schema
+CREATE TABLE transactions (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL,
+    date DATE NOT NULL,
+    memo VARCHAR(200),
+    amount DECIMAL(10, 2) NOT NULL,
+    category_id INTEGER,
+    suggested_category_id INTEGER,
+    is_approved BOOLEAN DEFAULT FALSE,
+    is_credit_card_payment BOOLEAN DEFAULT FALSE,
+    hash VARCHAR(64) UNIQUE,  -- SHA-256 for deduplication
+    FOREIGN KEY(account_id) REFERENCES accounts (id),
+    FOREIGN KEY(category_id) REFERENCES categories (id),
+    FOREIGN KEY(suggested_category_id) REFERENCES categories (id)
+);
+
+-- Target PostgreSQL Schema (Multi-tenant with accrual fields)
+CREATE TABLE transactions (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,  -- Added for multi-tenancy
+    account_id INTEGER NOT NULL,
+    date DATE NOT NULL,
+    memo VARCHAR(200),
+    amount DECIMAL(10, 2) NOT NULL,
+    category_id INTEGER,
+    suggested_category_id INTEGER,
+    is_approved BOOLEAN DEFAULT FALSE,
+    is_credit_card_payment BOOLEAN DEFAULT FALSE,
+    hash VARCHAR(64),
+    -- Accrual fields for Phase 7
+    accrual_start_date DATE,
+    accrual_end_date DATE,
+    accrual_method VARCHAR(20),  -- 'straight-line', etc.
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_transaction_hash_user UNIQUE (user_id, hash),
+    FOREIGN KEY(account_id) REFERENCES accounts (id),
+    FOREIGN KEY(category_id) REFERENCES categories (id),
+    FOREIGN KEY(suggested_category_id) REFERENCES categories (id)
+);
+CREATE INDEX idx_transactions_user_id ON transactions(user_id);
+CREATE INDEX idx_transactions_date ON transactions(date);
+CREATE INDEX idx_transactions_account_id ON transactions(account_id);
+CREATE INDEX idx_transactions_category_id ON transactions(category_id);
+```
+
+### **category_rules**
+```sql
+-- Current SQLite Schema
+CREATE TABLE category_rules (
+    id INTEGER PRIMARY KEY,
+    pattern VARCHAR(200) NOT NULL,
+    category_id INTEGER NOT NULL,
+    priority INTEGER DEFAULT 5,
+    FOREIGN KEY(category_id) REFERENCES categories (id)
+);
+
+-- Target PostgreSQL Schema (Multi-tenant)
+CREATE TABLE category_rules (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,  -- Added for multi-tenancy
+    pattern VARCHAR(200) NOT NULL,
+    category_id INTEGER NOT NULL,
+    priority INTEGER DEFAULT 5,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(category_id) REFERENCES categories (id)
+);
+CREATE INDEX idx_category_rules_user_id ON category_rules(user_id);
+CREATE INDEX idx_category_rules_priority ON category_rules(priority);
+```
+
+### **forecast_items**
+```sql
+-- Current SQLite Schema
+CREATE TABLE forecast_items (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    category_id INTEGER NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL,
+    frequency VARCHAR(20) NOT NULL,  -- 'monthly', 'quarterly', 'annual'
+    type VARCHAR(20) NOT NULL,       -- 'fixed', 'variable'
+    start_date DATE,
+    FOREIGN KEY(category_id) REFERENCES categories (id)
+);
+
+-- Target PostgreSQL Schema (Multi-tenant)
+CREATE TABLE forecast_items (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,  -- Added for multi-tenancy
+    name VARCHAR(100) NOT NULL,
+    category_id INTEGER NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL,
+    frequency VARCHAR(20) NOT NULL CHECK (frequency IN ('monthly', 'quarterly', 'annual')),
+    type VARCHAR(20) NOT NULL CHECK (type IN ('fixed', 'variable')),
+    start_date DATE,
+    end_date DATE,  -- Added for better forecasting
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(category_id) REFERENCES categories (id)
+);
+CREATE INDEX idx_forecast_items_user_id ON forecast_items(user_id);
+```
+
+### **Row Level Security (RLS) Policies**
+```sql
+-- Enable RLS on all tables
+ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE category_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE forecast_items ENABLE ROW LEVEL SECURITY;
+
+-- Create policies for user isolation
+CREATE POLICY user_isolation_accounts ON accounts 
+    FOR ALL USING (user_id = current_setting('app.user_id'));
+CREATE POLICY user_isolation_categories ON categories 
+    FOR ALL USING (user_id = current_setting('app.user_id'));
+CREATE POLICY user_isolation_transactions ON transactions 
+    FOR ALL USING (user_id = current_setting('app.user_id'));
+CREATE POLICY user_isolation_category_rules ON category_rules 
+    FOR ALL USING (user_id = current_setting('app.user_id'));
+CREATE POLICY user_isolation_forecast_items ON forecast_items 
+    FOR ALL USING (user_id = current_setting('app.user_id'));
+```
+
+---
+
+## **Business Logic Service Migration**
+
+### **Service: importer.py → Lambda: import-processor**
+Port from `.kiro/architecture.md`:
+- **CSV Parsing**: Support 3-column (Date, Description, Amount) and 4-column (Date, Description, Credit, Debit) formats
+- **OFX Parsing**: Use Python `ofxparse` library
+- **Date Format Detection**: Support dd/mm/yyyy, mm/dd/yyyy, yyyy-mm-dd, with day suffix
+- **Hash Generation**: SHA-256 of (date, memo, amount) for deduplication
+- **Credit Card Detection**: Auto-detect credit card payments
+
+### **Service: categorizer.py → Lambda: categorizer**
+Port from `.kiro/architecture.md`:
+- **Pattern Matching**: Case-insensitive substring match on transaction memo
+- **Priority Ordering**: Higher priority rules checked first
+- **Category Suggestion**: Set suggested_category_id on transactions
+- **Credit Card Payment Detection**: Flag transfers between accounts
+
+### **Service: accrual.py → Lambda: accrual-calculator**
+Future implementation for Phase 7:
+- Calculate monthly accrued amounts based on accrual_method
+- Support straight-line method
+- Generate accrual reports
+
+### **Service: forecast.py → Lambda: forecast-calculator**
+Future implementation for Phase 8:
+- Calculate projected amounts based on frequency
+- Compare budget vs actual spending
+
+---
+
+## **Current REST API to GraphQL Mapping**
+
+Based on `.kiro/architecture.md` REST API endpoints:
+
+### **Accounts**
+| Current REST | GraphQL Query/Mutation |
+|--------------|------------------------|
+| GET /api/accounts | Query: `listAccounts` |
+| POST /api/accounts | Mutation: `createAccount` |
+| PATCH /api/accounts/<id> | Mutation: `updateAccount` |
+| DELETE /api/accounts/<id> | Mutation: `deleteAccount` |
+
+### **Categories**
+| Current REST | GraphQL Query/Mutation |
+|--------------|------------------------|
+| GET /api/categories | Query: `listCategories` (hierarchical) |
+| POST /api/categories | Mutation: `createCategory` |
+| PATCH /api/categories/<id> | Mutation: `updateCategory` |
+| DELETE /api/categories/<id> | Mutation: `deleteCategory` (with validation) |
+
+### **Category Rules**
+| Current REST | GraphQL Query/Mutation |
+|--------------|------------------------|
+| GET /api/category-rules | Query: `listCategoryRules` |
+| POST /api/category-rules | Mutation: `createCategoryRule` |
+| PATCH /api/category-rules/<id> | Mutation: `updateCategoryRule` |
+| DELETE /api/category-rules/<id> | Mutation: `deleteCategoryRule` |
+
+### **Transactions**
+| Current REST | GraphQL Query/Mutation |
+|--------------|------------------------|
+| GET /api/transactions | Query: `listTransactions` (with filters) |
+| PATCH /api/transactions/<id> | Mutation: `updateTransaction` |
+| N/A | Mutation: `approveTransactions` (bulk) |
+| N/A | Mutation: `bulkUpdateTransactions` |
+
+### **Forecast**
+| Current REST | GraphQL Query/Mutation |
+|--------------|------------------------|
+| GET /api/forecast | Query: `listForecastItems` |
+| POST /api/forecast | Mutation: `createForecastItem` |
+| PATCH /api/forecast/<id> | Mutation: `updateForecastItem` |
+| DELETE /api/forecast/<id> | Mutation: `deleteForecastItem` |
+
+### **Import**
+| Current REST | GraphQL/Lambda |
+|--------------|----------------|
+| POST /api/import | Mutation: `requestUploadUrl` → S3 Upload → Lambda trigger |
+
+---
+
+## **Frontend Component Mapping**
+
+Based on `.kiro/architecture.md` current frontend:
+
+| Current Template | Vue.js Component |
+|------------------|------------------|
+| transactions.html | TransactionsList.vue, TransactionEdit.vue |
+| config.html | AccountsList.vue, CategoriesList.vue, CategoryRulesList.vue, ForecastList.vue |
+| dashboard.html | Dashboard.vue (Chart.js → vue-chartjs) |
+| cashflow.html | CashFlowReport.vue |
+| accrual.html | AccrualReport.vue |
+
+### **UI Features to Preserve**
+From `.kiro/architecture.md`:
+- **Dual dropdown system**: Category → Subcategory (cascading dropdowns)
+- **Text-based category editor**: Separate text areas for income vs expense
+- **Bulk operations**: Approve multiple transactions, bulk categorize
+- **Filtering**: By date, account, category, status
+- **Checkbox selection**: For bulk actions
+
+---
+
+## **Development Standards Alignment**
+
+Based on `.kiro/rules.md` and `.kiro/development_guide.md`:
+
+### **Backend Standards (Applied to Lambda)**
+- Use minimal, focused implementations
+- Follow PEP 8 naming conventions
+- Use type hints where helpful
+- Keep functions small and single-purpose
+- Return data structures, not Flask responses → Return JSON for Lambda responses
+
+### **Testing Strategy**
+- Unit tests for Lambda functions (port existing test patterns)
+- Integration tests for AppSync API
+- End-to-end tests for complete flows
+- Test deduplication logic
+- Test categorization rules
+- Verify database constraints
+
+### **Error Handling**
+- Return appropriate HTTP status codes (200, 201, 400, 404)
+- Include error messages in responses
+- Log errors with context for debugging
+- Validate inputs before processing
+
+---
+
+## **Risk Assessment and Mitigation**
+
+| Risk | Impact | Likelihood | Mitigation |
+|------|--------|------------|------------|
+| GraphQL learning curve | Medium | High | Use Amplify libraries, follow AWS examples |
+| RLS configuration errors | High | Medium | Thorough testing, multiple test users |
+| Lambda cold starts | Low | High | Keep Lambdas warm, optimize package size |
+| File import failures | Medium | Medium | Implement retry logic, store status in DynamoDB |
+| Cost overruns | Medium | Low | Use reserved capacity, monitor with CloudWatch |
+| Data isolation breach | High | Low | RLS policies, code reviews, security testing |
+
+---
+
+## **Timeline Estimates**
+
+### **Phase 1: Foundation (Weeks 1-2)**
+- Tasks 1-4: AWS Infrastructure, Database Schema, Cognito, AppSync Foundation
+
+### **Phase 2: Core API (Weeks 3-4)**
+- Tasks 5-11: Resolvers, CRUD Operations, S3 Upload, Import Processing
+
+### **Phase 3: Vue.js Frontend (Weeks 5-7)**
+- Tasks 12-20: Project Setup, Auth UI, All Management Screens
+
+### **Phase 4: Reports & Dashboard (Weeks 8-9)**
+- Tasks 21-24: Dashboard, Cash Flow, Accrual, Budget vs Actual
+
+### **Phase 5: Production Readiness (Weeks 10-12)**
+- Tasks 25-30: CloudFront, Monitoring, Security, CI/CD, Documentation
+
+**Total Estimated Duration**: 12 weeks
+
+---
+
+## **Cost Estimation Framework**
+
+### **Monthly AWS Costs (Development)**
+- RDS db.t3.micro: ~$15/month
+- Lambda (free tier eligible): ~$0-5/month
+- AppSync: ~$4/million requests
+- S3: ~$0.023/GB
+- CloudFront: ~$0.085/GB transfer
+- Cognito: Free for first 50k MAUs
+- CloudWatch: ~$5/month
+
+**Estimated Dev Environment**: $25-50/month
+
+### **Monthly AWS Costs (Production)**
+- RDS db.t3.small: ~$30/month
+- Lambda: ~$5-20/month
+- AppSync: ~$20-50/month (based on usage)
+- S3: ~$5/month
+- CloudFront: ~$10-50/month
+- Cognito: Free for first 50k MAUs
+- CloudWatch: ~$10/month
+- WAF: ~$5/month
+
+**Estimated Production**: $100-200/month (scales with usage)
+
+---
 
 Key Design Decisions:
 1. AppSync with hybrid resolvers: Direct RDS for simple queries (performance), Lambda for complex
@@ -774,3 +1170,395 @@ Tests:
 - Test troubleshooting procedures
 
 Demo: Complete documentation enabling independent deployment
+
+---
+
+## **GraphQL Schema Definition**
+
+Based on the current data models from `.kiro/database_schema.md`:
+
+```graphql
+# Types
+type Account {
+  id: ID!
+  name: String!
+  accountNumber: String
+  startingBalance: Float
+  transactionCount: Int
+  createdAt: AWSDateTime
+  updatedAt: AWSDateTime
+}
+
+type Category {
+  id: ID!
+  name: String!
+  parentId: ID
+  parent: Category
+  subcategories: [Category]
+  type: CategoryType!
+  color: String
+  transactionCount: Int
+  createdAt: AWSDateTime
+  updatedAt: AWSDateTime
+}
+
+enum CategoryType {
+  income
+  expense
+  transfer
+}
+
+type Transaction {
+  id: ID!
+  accountId: ID!
+  account: Account
+  date: AWSDate!
+  memo: String
+  amount: Float!
+  categoryId: ID
+  category: Category
+  suggestedCategoryId: ID
+  suggestedCategory: Category
+  isApproved: Boolean
+  isCreditCardPayment: Boolean
+  hash: String
+  accrualStartDate: AWSDate
+  accrualEndDate: AWSDate
+  accrualMethod: String
+  createdAt: AWSDateTime
+  updatedAt: AWSDateTime
+}
+
+type CategoryRule {
+  id: ID!
+  pattern: String!
+  categoryId: ID!
+  category: Category
+  priority: Int
+  createdAt: AWSDateTime
+  updatedAt: AWSDateTime
+}
+
+type ForecastItem {
+  id: ID!
+  name: String!
+  categoryId: ID!
+  category: Category
+  amount: Float!
+  frequency: Frequency!
+  type: ForecastType!
+  startDate: AWSDate
+  endDate: AWSDate
+  createdAt: AWSDateTime
+  updatedAt: AWSDateTime
+}
+
+enum Frequency {
+  monthly
+  quarterly
+  annual
+}
+
+enum ForecastType {
+  fixed
+  variable
+}
+
+type ImportResult {
+  success: Boolean!
+  importedCount: Int
+  duplicateCount: Int
+  errorCount: Int
+  errors: [String]
+}
+
+type UploadUrl {
+  url: String!
+  key: String!
+  expiresAt: AWSDateTime!
+}
+
+# Inputs
+input AccountInput {
+  name: String!
+  accountNumber: String
+  startingBalance: Float
+}
+
+input CategoryInput {
+  name: String!
+  parentId: ID
+  type: CategoryType!
+  color: String
+}
+
+input TransactionFilter {
+  accountId: ID
+  categoryId: ID
+  fromDate: AWSDate
+  toDate: AWSDate
+  isApproved: Boolean
+  excludeCCPayments: Boolean
+}
+
+input TransactionUpdateInput {
+  categoryId: ID
+  isApproved: Boolean
+  memo: String
+  accrualStartDate: AWSDate
+  accrualEndDate: AWSDate
+  accrualMethod: String
+}
+
+input CategoryRuleInput {
+  pattern: String!
+  categoryId: ID!
+  priority: Int
+}
+
+input ForecastItemInput {
+  name: String!
+  categoryId: ID!
+  amount: Float!
+  frequency: Frequency!
+  type: ForecastType!
+  startDate: AWSDate
+  endDate: AWSDate
+}
+
+# Queries
+type Query {
+  # Accounts
+  listAccounts: [Account]
+  getAccount(id: ID!): Account
+  
+  # Categories (returns hierarchical structure)
+  listCategories(type: CategoryType): [Category]
+  getCategory(id: ID!): Category
+  
+  # Transactions (with pagination and filtering)
+  listTransactions(filter: TransactionFilter, limit: Int, offset: Int): [Transaction]
+  getTransaction(id: ID!): Transaction
+  
+  # Category Rules
+  listCategoryRules: [CategoryRule]
+  getCategoryRule(id: ID!): CategoryRule
+  
+  # Forecast Items
+  listForecastItems(categoryId: ID, fromDate: AWSDate, toDate: AWSDate): [ForecastItem]
+  getForecastItem(id: ID!): ForecastItem
+  
+  # Reports
+  getDashboardSummary(fromDate: AWSDate!, toDate: AWSDate!): DashboardSummary
+  getCashFlowReport(fromDate: AWSDate!, toDate: AWSDate!, accountId: ID): CashFlowReport
+  getAccrualReport(fromDate: AWSDate!, toDate: AWSDate!): AccrualReport
+  getBudgetVsActual(fromDate: AWSDate!, toDate: AWSDate!): BudgetVsActualReport
+}
+
+# Mutations
+type Mutation {
+  # Accounts
+  createAccount(input: AccountInput!): Account
+  updateAccount(id: ID!, input: AccountInput!): Account
+  deleteAccount(id: ID!): Boolean
+  
+  # Categories
+  createCategory(input: CategoryInput!): Category
+  updateCategory(id: ID!, input: CategoryInput!): Category
+  deleteCategory(id: ID!): Boolean
+  
+  # Transactions
+  updateTransaction(id: ID!, input: TransactionUpdateInput!): Transaction
+  deleteTransaction(id: ID!): Boolean
+  approveTransactions(ids: [ID]!): [Transaction]
+  bulkUpdateTransactions(ids: [ID]!, categoryId: ID!): [Transaction]
+  
+  # Category Rules
+  createCategoryRule(input: CategoryRuleInput!): CategoryRule
+  updateCategoryRule(id: ID!, input: CategoryRuleInput!): CategoryRule
+  deleteCategoryRule(id: ID!): Boolean
+  
+  # Forecast Items
+  createForecastItem(input: ForecastItemInput!): ForecastItem
+  updateForecastItem(id: ID!, input: ForecastItemInput!): ForecastItem
+  deleteForecastItem(id: ID!): Boolean
+  
+  # File Import
+  requestUploadUrl(filename: String!, contentType: String!): UploadUrl
+  applyCategorySuggestions(transactionIds: [ID]!): [Transaction]
+}
+
+# Report Types
+type DashboardSummary {
+  totalIncome: Float!
+  totalExpenses: Float!
+  netFlow: Float!
+  averageMonthly: Float!
+  categoryBreakdown: [CategoryAmount]
+  monthlyTrends: [MonthlyTrend]
+}
+
+type CategoryAmount {
+  categoryId: ID!
+  categoryName: String!
+  amount: Float!
+  percentage: Float!
+}
+
+type MonthlyTrend {
+  month: String!
+  income: Float!
+  expenses: Float!
+  netFlow: Float!
+}
+
+type CashFlowReport {
+  months: [MonthlyCashFlow]
+  totalIncome: Float!
+  totalExpenses: Float!
+  netFlow: Float!
+}
+
+type MonthlyCashFlow {
+  month: String!
+  income: Float!
+  expenses: Float!
+  netFlow: Float!
+  categoryBreakdown: [CategoryAmount]
+}
+
+type AccrualReport {
+  cashBasis: [MonthlyAmount]
+  accrualBasis: [MonthlyAmount]
+  variance: [MonthlyAmount]
+}
+
+type MonthlyAmount {
+  month: String!
+  amount: Float!
+}
+
+type BudgetVsActualReport {
+  items: [BudgetVsActualItem]
+  totalBudget: Float!
+  totalActual: Float!
+  totalVariance: Float!
+}
+
+type BudgetVsActualItem {
+  categoryId: ID!
+  categoryName: String!
+  budget: Float!
+  actual: Float!
+  variance: Float!
+  percentUsed: Float!
+}
+```
+
+---
+
+## **Rollback and Contingency Plan**
+
+### **Pre-Migration Checklist**
+- [ ] All stakeholders informed of migration timeline
+- [ ] Current Flask application fully documented
+- [ ] All test scripts passing
+- [ ] Backup procedures in place
+
+### **Rollback Triggers**
+- Critical data loss or corruption
+- Security breach detected
+- >50% of functionality broken post-deployment
+- Performance degradation >5x baseline
+
+### **Rollback Procedures**
+
+#### **Phase 1-4 (Infrastructure/API)**
+- Delete CloudFormation/SAM stack
+- Verify RDS data is removed (no data migration, fresh start)
+- Continue using existing Flask application
+
+#### **Phase 5+ (Frontend Migration)**
+- Revert CloudFront distribution to serve Flask templates
+- Keep Flask backend running as fallback
+- Gradual rollout with feature flags
+
+### **Contingency Options**
+
+| Scenario | Contingency |
+|----------|-------------|
+| AppSync performance issues | Fall back to API Gateway + Lambda REST API |
+| RDS cost too high | Consider Aurora Serverless v2 or DynamoDB |
+| Cognito integration complex | Consider Auth0 or Firebase Auth |
+| Vue.js team capacity | Continue with server-rendered templates |
+| Timeline overrun | Prioritize core features (Phases 1-4, Tasks 1-18) |
+
+### **Feature Parity Checklist**
+Before full cutover, verify:
+- [ ] Account CRUD operations
+- [ ] Category hierarchical management
+- [ ] Transaction import (CSV 3-col, 4-col, OFX)
+- [ ] Hash-based deduplication
+- [ ] Auto-categorization with rules
+- [ ] Credit card payment detection
+- [ ] Bulk approval workflow
+- [ ] Dashboard visualizations
+- [ ] Cash flow reports
+- [ ] User data isolation (multi-tenancy)
+
+---
+
+## **Success Criteria**
+
+### **Functional Requirements**
+- All 5 entity types (Account, Category, Transaction, CategoryRule, ForecastItem) fully operational
+- File import processing complete within 30 seconds for 1000 transactions
+- All current UI features replicated in Vue.js
+- Multi-tenant data isolation verified
+
+### **Non-Functional Requirements**
+- API response time < 500ms (p95)
+- System availability > 99.9%
+- Security audit passed
+- Cost within budget estimates
+
+### **User Acceptance**
+- Existing workflows preserved
+- No data entry regressions
+- Dashboard loads within 2 seconds
+- File uploads work reliably
+
+---
+
+## **Appendix: File Formats Supported**
+
+Based on `.kiro/technical_context.md`:
+
+### **CSV 3-Column Format**
+```csv
+Date,Description,Amount
+01/15/2026,GROCERY STORE,-45.67
+01/16/2026,SALARY DEPOSIT,3500.00
+```
+- Negative amounts = expenses
+- Positive amounts = income
+
+### **CSV 4-Column Format**
+```csv
+Date,Description,Credit,Debit
+01/15/2026,GROCERY STORE,,45.67
+01/16/2026,SALARY DEPOSIT,3500.00,
+```
+- Credit column = income
+- Debit column = expenses
+
+### **Date Formats Supported**
+- `dd/mm/yyyy` (e.g., 15/01/2026)
+- `mm/dd/yyyy` (e.g., 01/15/2026)
+- `yyyy-mm-dd` (e.g., 2026-01-15)
+- With day suffix: `20/11/2018 TUE`
+
+### **OFX Format**
+- Standard Open Financial Exchange format
+- Parsed using Python `ofxparse` library
+- Automatically extracts transactions from bank exports
